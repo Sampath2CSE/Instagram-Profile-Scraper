@@ -2,6 +2,25 @@
 import { Actor } from 'apify';
 import { CheerioCrawler, log } from 'crawlee';
 
+// Helper function to parse window._sharedData JSON
+function parseInstagramSharedData(htmlContent) {
+    let sharedData = null;
+    // Regex to find the window._sharedData object in a script tag
+    const regex = /<script[^>]*>window\._sharedData\s*=\s*({[^;]+});<\/script>/;
+    const match = htmlContent.match(regex);
+
+    if (match && match[1]) {
+        try {
+            sharedData = JSON.parse(match[1]);
+        } catch (e) {
+            log.warning(`Failed to parse window._sharedData JSON: ${e.message}`);
+        }
+    } else {
+        log.warning('window._sharedData script tag not found or regex failed.');
+    }
+    return sharedData;
+}
+
 // Initialize the Actor
 await Actor.init();
 
@@ -98,13 +117,19 @@ const crawler = new CheerioCrawler({
                 throw new Error('Profile not found or unavailable');
             }
             
-            // Extract profile data using multiple strategies
+            // Extract profile data using multiple strategies, prioritizing sharedData
             const profileData = extractProfileData($, url, body);
             
-            // Post-process to ensure we get bio and website from ANY source
-            profileData.bio = profileData.bio || extractBioFromAnywhere($, body);
-            profileData.website = profileData.website || extractWebsiteFromAnywhere($, body);
-            profileData.isVerified = profileData.isVerified || detectVerification($, body);
+            // Apply ultimate fallbacks if data is still missing
+            if (profileData.bio === null) {
+                profileData.bio = extractBioFromAnywhere($, body);
+            }
+            if (profileData.website === null) {
+                profileData.website = extractWebsiteFromAnywhere($, body);
+            }
+            if (profileData.isVerified === false) {
+                profileData.isVerified = detectVerification($, body);
+            }
             
             // Extract recent posts if requested
             if (includeRecentPosts) {
@@ -139,7 +164,7 @@ const crawler = new CheerioCrawler({
 });
 
 // Extract profile data from Instagram HTML (robust extraction for all profile types)
-function extractProfileData($, url) {
+function extractProfileData($, url, bodyHtml) {
     const data = {
         username: null,
         fullName: null,
@@ -152,7 +177,35 @@ function extractProfileData($, url) {
         isVerified: false
     };
     
-    // Strategy 1: Extract from JSON-LD structured data
+    // --- STRATEGY 0: Extract from window._sharedData JSON (Most Reliable) ---
+    const sharedData = parseInstagramSharedData(bodyHtml);
+    if (sharedData && sharedData.entry_data && sharedData.entry_data.ProfilePage) {
+        const profilePage = sharedData.entry_data.ProfilePage[0];
+        if (profilePage && profilePage.graphql && profilePage.graphql.user) {
+            const user = profilePage.graphql.user;
+
+            data.username = user.username || data.username;
+            data.fullName = user.full_name || data.fullName;
+            data.bio = user.biography || data.bio;
+            data.profileImage = user.profile_pic_url_hd || user.profile_pic_url || data.profileImage;
+            data.isVerified = user.is_verified || data.isVerified;
+            data.website = user.external_url || data.website;
+
+            // Stats
+            if (user.edge_followed_by && user.edge_followed_by.count !== undefined) {
+                data.followers = user.edge_followed_by.count;
+            }
+            if (user.edge_follow && user.edge_follow.count !== undefined) {
+                data.following = user.edge_follow.count;
+            }
+            if (user.edge_owner_to_timeline_media && user.edge_owner_to_timeline_media.count !== undefined) {
+                data.postsCount = user.edge_owner_to_timeline_media.count;
+            }
+            log.info('✨ Successfully extracted initial data from window._sharedData.');
+        }
+    }
+    
+    // Strategy 1: Extract from JSON-LD structured data (Fallback)
     const scripts = $('script[type="application/ld+json"]');
     let jsonData = null;
     
@@ -169,103 +222,80 @@ function extractProfileData($, url) {
     });
     
     if (jsonData) {
-        data.username = jsonData.alternateName || jsonData.name;
-        data.fullName = jsonData.name;
-        data.bio = jsonData.description;
-        data.profileImage = jsonData.image;
-        data.website = jsonData.url !== url ? jsonData.url : null;
+        data.username = data.username || jsonData.alternateName || jsonData.name;
+        data.fullName = data.fullName || jsonData.name;
+        data.bio = data.bio || jsonData.description;
+        data.profileImage = data.profileImage || jsonData.image;
+        data.website = data.website || (jsonData.url !== url ? jsonData.url : null);
         
-        // Extract stats from interactionStatistic if available
         if (jsonData.interactionStatistic) {
             jsonData.interactionStatistic.forEach(stat => {
                 if (stat.interactionType === 'https://schema.org/FollowAction') {
-                    data.followers = parseInt(stat.userInteractionCount) || null;
+                    data.followers = data.followers || parseInt(stat.userInteractionCount) || null;
                 }
             });
         }
     }
     
-    // Strategy 2: Extract from meta tags
+    // Strategy 2: Extract from meta tags (Fallback)
     const ogTitle = $('meta[property="og:title"]').attr('content');
     const ogDescription = $('meta[property="og:description"]').attr('content');
     const ogImage = $('meta[property="og:image"]').attr('content');
     
-    // Extract username from various sources
-    if (!data.username) {
-        if (ogTitle) {
-            // Try different title formats
-            const usernamePatterns = [
-                /\(@([^)]+)\)/, // "Name (@username)"
-                /^([^(•]+)/, // Just the name part before (•
-            ];
-            
-            for (const pattern of usernamePatterns) {
-                const match = ogTitle.match(pattern);
-                if (match) {
-                    data.username = match[1].trim().replace('@', '');
-                    break;
-                }
-            }
-        }
-        
-        // Fallback to URL
-        if (!data.username) {
-            const urlParts = url.split('/').filter(Boolean);
-            data.username = urlParts[urlParts.length - 1];
-        }
-    }
-    
-    // Extract full name from title
-    if (!data.fullName && ogTitle) {
-        // Clean patterns to extract just the name
-        let cleanName = ogTitle;
-        
-        // Remove "• Instagram photos and videos" part
-        cleanName = cleanName.replace(/\s*•.*$/, '');
-        // Remove (@username) part  
-        cleanName = cleanName.replace(/\s*\(@[^)]+\)/, '');
-        // Remove "Instagram photos and videos" part
-        cleanName = cleanName.replace(/\s*Instagram photos and videos.*$/, '');
-        
-        data.fullName = cleanName.trim() || null;
-    }
-    
-    // Extract profile image
-    if (!data.profileImage && ogImage) {
-        data.profileImage = ogImage;
-    }
-    
-    // Strategy 3: Extract stats from meta description first, then body text
-    if (ogDescription) {
-        // Try multiple patterns for meta description
-        const patterns = [
-            // Pattern 1: "X Followers, Y Following, Z Posts - Bio"
-            /(\d+(?:,\d+)*[KMB]?)\s*Followers?,\s*(\d+(?:,\d+)*[KMB]?)\s*Following,\s*(\d+(?:,\d+)*[KMB]?)\s*Posts?\s*-\s*(.+)/i,
-            // Pattern 2: "X followers, Y following, Z posts"
-            /(\d+(?:,\d+)*[KMB]?)\s*followers?,\s*(\d+(?:,\d+)*[KMB]?)\s*following,\s*(\d+(?:,\d+)*[KMB]?)\s*posts?/i,
+    if (!data.username && ogTitle) {
+        const usernamePatterns = [
+            /\(@([^)]+)\)/, // "Name (@username)"
+            /^([^(•]+)/, // Just the name part before (•
         ];
         
-        let statsExtracted = false;
-        
-        for (const pattern of patterns) {
-            const match = ogDescription.match(pattern);
-            if (match && match.length >= 4 && match[1] && match[2] && match[3]) {
-                // Stats pattern matched
-                data.followers = data.followers || parseInstagramCount(match[1]);
-                data.following = data.following || parseInstagramCount(match[2]);
-                data.postsCount = data.postsCount || parseInstagramCount(match[3]);
-                statsExtracted = true;
+        for (const pattern of usernamePatterns) {
+            const match = ogTitle.match(pattern);
+            if (match) {
+                data.username = match[1].trim().replace('@', '');
                 break;
             }
         }
     }
     
-    // Strategy 4: Extract stats from page body text (fallback)
-    const bodyText = $('body').text();
+    if (!data.username) {
+        const urlParts = url.split('/').filter(Boolean);
+        data.username = urlParts[urlParts.length - 1];
+    }
     
-    if (!data.followers || !data.following || !data.postsCount) {
-        // More aggressive regex patterns for stats
-        if (!data.followers) {
+    if (!data.fullName && ogTitle) {
+        let cleanName = ogTitle;
+        cleanName = cleanName.replace(/\s*•.*$/, '');
+        cleanName = cleanName.replace(/\s*\(@[^)]+\)/, '');
+        cleanName = cleanName.replace(/\s*Instagram photos and videos.*$/, '');
+        data.fullName = cleanName.trim() || null;
+    }
+    
+    if (!data.profileImage && ogImage) {
+        data.profileImage = ogImage;
+    }
+    
+    // Strategy 3: Extract stats from meta description (Fallback)
+    if (ogDescription) {
+        const patterns = [
+            /(\d+(?:,\d+)*[KMB]?)\s*Followers?,\s*(\d+(?:,\d+)*[KMB]?)\s*Following,\s*(\d+(?:,\d+)*[KMB]?)\s*Posts?\s*-\s*(.+)/i,
+            /(\d+(?:,\d+)*[KMB]?)\s*followers?,\s*(\d+(?:,\d+)*[KMB]?)\s*following,\s*(\d+(?:,\d+)*[KMB]?)\s*posts?/i,
+        ];
+        
+        for (const pattern of patterns) {
+            const match = ogDescription.match(pattern);
+            if (match && match.length >= 4 && match[1] && match[2] && match[3]) {
+                data.followers = data.followers || parseInstagramCount(match[1]);
+                data.following = data.following || parseInstagramCount(match[2]);
+                data.postsCount = data.postsCount || parseInstagramCount(match[3]);
+                break;
+            }
+        }
+    }
+    
+    // Strategy 4: Extract stats from page body text (Lowest Priority Fallback)
+    const bodyText = $('body').text();
+    if (data.followers === null || data.following === null || data.postsCount === null) {
+        if (data.followers === null) {
             const followerPatterns = [
                 /(\d+(?:[,\.]\d+)*[KMB]?)\s*followers?/gi,
                 /followers?\s*(\d+(?:[,\.]\d+)*[KMB]?)/gi
@@ -280,7 +310,7 @@ function extractProfileData($, url) {
             }
         }
         
-        if (!data.following) {
+        if (data.following === null) {
             const followingPatterns = [
                 /(\d+(?:[,\.]\d+)*[KMB]?)\s*following/gi,
                 /following\s*(\d+(?:[,\.]\d+)*[KMB]?)/gi
@@ -295,7 +325,7 @@ function extractProfileData($, url) {
             }
         }
         
-        if (!data.postsCount) {
+        if (data.postsCount === null) {
             const postsPatterns = [
                 /(\d+(?:[,\.]\d+)*[KMB]?)\s*posts?/gi,
                 /posts?\s*(\d+(?:[,\.]\d+)*[KMB]?)/gi
@@ -311,43 +341,36 @@ function extractProfileData($, url) {
         }
     }
     
+    // Ensure `null` for non-extracted values if they are 0 by parsing
+    data.followers = data.followers === 0 ? null : data.followers;
+    data.following = data.following === 0 ? null : data.following;
+    data.postsCount = data.postsCount === 0 ? null : data.postsCount;
+
     return data;
 }
 
-// Aggressive bio extraction from ALL possible sources
+// Aggressive bio extraction from ALL possible sources (Fallback)
 function extractBioFromAnywhere($, bodyHtml) {
-    log.info('🔍 Aggressive bio extraction starting...');
+    log.info('🔍 Aggressive bio extraction (fallback) starting...');
     
-    // Method 1: Look in ALL script tags for JSON data
     let foundBio = null;
     
+    // Method 1: Look in ALL script tags for JSON data (less specific than sharedData)
     $('script').each((i, script) => {
-        if (foundBio) return false; // Break if already found
-        
+        if (foundBio) return false;
         const content = $(script).html();
         if (content) {
-            // Look for biography in JSON
-            const bioMatches = content.match(/"biography":\s*"([^"]+)"/g);
+            const bioMatches = content.match(/"biography":\s*"(.*?)(?<!\\)"/g); // More robust regex for escaped quotes
             if (bioMatches) {
                 for (const match of bioMatches) {
-                    const bioText = match.match(/"biography":\s*"([^"]+)"/)[1];
-                    if (bioText && bioText.length > 3) {
-                        log.info(`📝 Found bio in script: ${bioText}`);
-                        foundBio = bioText;
-                        return false; // Break
-                    }
-                }
-            }
-            
-            // Look for any description fields
-            const descMatches = content.match(/"description":\s*"([^"]+)"/g);
-            if (descMatches) {
-                for (const match of descMatches) {
-                    const descText = match.match(/"description":\s*"([^"]+)"/)[1];
-                    if (descText && descText.length > 10 && !descText.includes('See Instagram photos')) {
-                        log.info(`📝 Found description in script: ${descText}`);
-                        foundBio = descText;
-                        return false; // Break
+                    const bioTextMatch = match.match(/"biography":\s*"(.*?)(?<!\\)"/);
+                    if (bioTextMatch && bioTextMatch[1]) {
+                        let bioText = bioTextMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"'); // Handle newlines and escaped quotes
+                        if (bioText && bioText.length > 3) {
+                            log.info(`📝 Found bio in script (fallback): ${bioText}`);
+                            foundBio = bioText;
+                            return false;
+                        }
                     }
                 }
             }
@@ -356,41 +379,39 @@ function extractBioFromAnywhere($, bodyHtml) {
     
     if (foundBio) return foundBio;
     
-    // Method 2: Look in raw HTML for common bio patterns
+    // Method 2: Look in raw HTML for common bio patterns (least reliable)
     const bioKeywords = ['Digital creator', 'Creator', 'Entrepreneur', 'Founder', 'CEO', 'Coach', 'Artist', 'Automation', 'Expert'];
     const bodyText = $('body').text();
     
     for (const keyword of bioKeywords) {
         if (bodyText.includes(keyword)) {
-            log.info(`🎯 Found keyword "${keyword}" in body`);
-            
-            // Extract text around this keyword
-            const regex = new RegExp(`${keyword}[^0-9]*?(?=\\d+|$)`, 'i');
+            log.info(`🎯 Found keyword "${keyword}" in body (fallback)`);
+            const regex = new RegExp(`(?<=\\s|^)${keyword}[^.!?]{5,200}[.!?]?`, 'i'); // Improved regex to capture a sentence/phrase
             const match = bodyText.match(regex);
             if (match && match[0]) {
                 let bio = match[0].trim();
                 bio = bio.replace(/\s+/g, ' ');
                 if (bio.length > 10 && bio.length < 500) {
-                    log.info(`📝 Extracted bio around keyword: ${bio}`);
+                    log.info(`📝 Extracted bio around keyword (fallback): ${bio}`);
                     return bio;
                 }
             }
         }
     }
     
-    log.info('❌ No bio found with aggressive extraction');
+    log.info('❌ No bio found with aggressive extraction (fallback)');
     return null;
 }
 
-// Aggressive website extraction from ALL possible sources  
+// Aggressive website extraction from ALL possible sources (Fallback)
 function extractWebsiteFromAnywhere($, bodyHtml) {
-    log.info('🔗 Aggressive website extraction starting...');
+    log.info('🔗 Aggressive website extraction (fallback) starting...');
     
-    // Method 1: Look in ALL script tags for external URLs
     let foundWebsite = null;
     
+    // Method 1: Look in ALL script tags for external URLs
     $('script').each((i, script) => {
-        if (foundWebsite) return false; // Break if already found
+        if (foundWebsite) return false;
         
         const content = $(script).html();
         if (content) {
@@ -400,20 +421,20 @@ function extractWebsiteFromAnywhere($, bodyHtml) {
                 for (const match of urlMatches) {
                     const url = match.match(/"external_url":\s*"([^"]+)"/)[1];
                     if (url && !url.includes('instagram.com')) {
-                        log.info(`🔗 Found external_url in script: ${url}`);
+                        log.info(`🔗 Found external_url in script (fallback): ${url}`);
                         foundWebsite = url;
-                        return false; // Break
+                        return false;
                     }
                 }
             }
             
             // Look for any linktr.ee or common bio links
-            const bioLinkMatches = content.match(/(linktr\.ee\/[^"'\s]+|bio\.link\/[^"'\s]+)/gi);
+            const bioLinkMatches = content.match(/(https?:\/\/(?:www\.)?(?:linktr\.ee|bio\.link|linkin\.bio|beacons\.ai|bit\.ly|tinyurl\.com)\/[^"'\s]+)/gi);
             if (bioLinkMatches) {
                 const link = bioLinkMatches[0];
-                log.info(`🔗 Found bio link in script: ${link}`);
-                foundWebsite = link.startsWith('http') ? link : `https://${link}`;
-                return false; // Break
+                log.info(`🔗 Found bio link in script (fallback): ${link}`);
+                foundWebsite = link;
+                return false;
             }
         }
     });
@@ -422,12 +443,8 @@ function extractWebsiteFromAnywhere($, bodyHtml) {
     
     // Method 2: Look in raw HTML for URL patterns
     const urlPatterns = [
-        /(linktr\.ee\/[\w\.-]+)/gi,
-        /(bio\.link\/[\w\.-]+)/gi,
-        /(linkin\.bio\/[\w\.-]+)/gi,
-        /(beacons\.ai\/[\w\.-]+)/gi,
-        /(bit\.ly\/[\w\.-]+)/gi,
-        /(tinyurl\.com\/[\w\.-]+)/gi
+        /(https?:\/\/(?:www\.)?(?:linktr\.ee|bio\.link|linkin\.bio|beacons\.ai|bit\.ly|tinyurl\.com)\/[\w\.-]+)/gi,
+        /(https?:\/\/(?:www\.)?[\w\.-]+\.[\w]{2,4}\/[^\s"']+)/gi // More general URL pattern
     ];
     
     const fullHtml = bodyHtml || $('body').html();
@@ -436,72 +453,50 @@ function extractWebsiteFromAnywhere($, bodyHtml) {
         const matches = [...fullHtml.matchAll(pattern)];
         if (matches.length > 0) {
             const foundUrl = matches[0][1];
-            if (!foundUrl.includes('instagram.com') && !foundUrl.includes('facebook.com')) {
-                const website = foundUrl.startsWith('http') ? foundUrl : `https://${foundUrl}`;
-                log.info(`🔗 Found URL via pattern: ${website}`);
-                return website;
+            // Filter out Instagram's own URLs or common social media links if not the primary external URL
+            if (!foundUrl.includes('instagram.com') && !foundUrl.includes('facebook.com') && !foundUrl.includes('twitter.com')) {
+                log.info(`🔗 Found URL via pattern (fallback): ${foundUrl}`);
+                return foundUrl;
             }
         }
     }
     
-    log.info('❌ No website found with aggressive extraction');
+    log.info('❌ No website found with aggressive extraction (fallback)');
     return null;
 }
 
-// Aggressive verification detection
+// Aggressive verification detection (Fallback)
 function detectVerification($, bodyHtml) {
-    log.info('✅ Checking verification status...');
+    log.info('✅ Checking verification status (fallback)...');
     
-    const bodyText = $('body').text().toLowerCase();
     const fullHtml = (bodyHtml || $('body').html()).toLowerCase();
     
-    // Check for various verification indicators
-    const verificationIndicators = [
-        'verified',
-        'blue checkmark',
-        'blue check',
-        'verified account',
-        'verification badge',
-        'checkmark'
-    ];
-    
-    for (const indicator of verificationIndicators) {
-        if (bodyText.includes(indicator) || fullHtml.includes(indicator)) {
-            log.info(`✅ Found verification indicator: ${indicator}`);
-            return true;
-        }
-    }
-    
-    // Check for verification in script tags
-    let isVerified = false;
-    $('script').each((i, script) => {
-        const content = $(script).html();
-        if (content && content.toLowerCase().includes('verified')) {
-            log.info('✅ Found verification in script tag');
-            isVerified = true;
-            return false; // Break
-        }
-    });
-    
-    if (isVerified) return true;
-    
-    // Check for SVG or icon elements that might indicate verification
+    // Check for specific SVG or icon elements that Instagram uses for verification
     const verificationSelectors = [
         'svg[aria-label*="verified" i]',
-        '[title*="verified" i]',
-        '[alt*="verified" i]',
-        '.verified',
-        '[data-verified]'
+        'img[src*="verified_badge" i]',
+        'span[aria-label*="verified" i]',
+        'span[title*="verified" i]',
+        'div[role="img"][aria-label*="verified" i]', // New selector for potential image roles
+        '._ab6l', // Common Instagram class for the badge, but can change
+        '[data-testid="verified_badge"]' // Sometimes elements have data-testid attributes
     ];
     
     for (const selector of verificationSelectors) {
         if ($(selector).length > 0) {
-            log.info(`✅ Found verification via selector: ${selector}`);
+            log.info(`✅ Found verification via selector (fallback): ${selector}`);
             return true;
         }
     }
     
-    log.info('❌ No verification indicators found');
+    // Less reliable: Check for "verified" text in a more controlled context
+    // Avoid general body text search as it can lead to false positives (e.g., "we verified your account")
+    if ($('h1').text().toLowerCase().includes('verified') || $('h2').text().toLowerCase().includes('verified')) {
+        log.info('✅ Found "verified" in a heading (fallback)');
+        return true;
+    }
+    
+    log.info('❌ No verification indicators found (fallback)');
     return false;
 }
 
@@ -574,7 +569,7 @@ const requests = profileUrls.map(urlInput => {
 });
 
 log.info(`🚀 Starting HTTP-based Instagram scraper for ${requests.length} profile(s)`);
-log.info(`⚙️  Using same approach as Apify's official Instagram scraper`);
+log.info(`⚙️  Using same approach as Apify's official Instagram scraper`);
 
 // Run the crawler
 await crawler.run(requests);
