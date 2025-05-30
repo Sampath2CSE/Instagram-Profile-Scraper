@@ -89,6 +89,21 @@ const crawler = new CheerioCrawler({
             log.info(`Meta description: ${metaDesc}`);
             log.info(`Body text length: ${bodyText.length}`);
             
+            // Debug: Show a sample of the body text to understand the structure
+            const bodyPreview = bodyText.substring(0, 500);
+            log.info(`Body text preview: ${bodyPreview}`);
+            
+            // Debug: Look for bio-related text
+            const bioKeywords = ['Digital creator', 'creator', 'entrepreneur', 'linktr.ee', 'bio.link'];
+            bioKeywords.forEach(keyword => {
+                if (bodyText.toLowerCase().includes(keyword.toLowerCase())) {
+                    log.info(`Found keyword "${keyword}" in body text`);
+                    const index = bodyText.toLowerCase().indexOf(keyword.toLowerCase());
+                    const context = bodyText.substring(Math.max(0, index - 50), index + 100);
+                    log.info(`Context around "${keyword}": ${context}`);
+                }
+            });
+            
             // Debug: Look for stats in body text
             const followerMatches = bodyText.match(/(\d+(?:,\d+)*[KMB]?)\s*(?:followers?|Followers?)/gi);
             const followingMatches = bodyText.match(/(\d+(?:,\d+)*[KMB]?)\s*(?:following|Following)/gi);
@@ -242,31 +257,69 @@ function extractProfileData($, url) {
         data.profileImage = ogImage;
     }
     
-    // Strategy 3: Extract bio and stats from body text (more reliable than meta description)
+    // Strategy 3: Extract bio from body text (simplified approach)
     const bodyText = $('body').text();
     
-    // Look for bio patterns in the body text
     if (!data.bio) {
-        // Try to find bio patterns - look for text between name and stats
-        const bioPatterns = [
-            // Pattern: After "Digital creator" or similar professional titles
-            /Digital creator\s*(.+?)(?=\d+\s*posts?|\d+\s*followers?)/i,
-            // Pattern: After the name, before stats
-            new RegExp(`${data.fullName || data.username}\\s*(.+?)(?=\\d+\\s*posts?|\\d+\\s*followers?)`, 'i'),
-            // Pattern: Look for common bio indicators
-            /(?:creator|entrepreneur|founder|ceo|founder|artist)[\s\n]*(.+?)(?=\d+\s*posts?|\d+\s*followers?)/i,
+        // Simple approach: look for common bio indicators and extract surrounding text
+        const bioIndicators = [
+            'Digital creator',
+            'Creator',
+            'Entrepreneur', 
+            'Founder',
+            'CEO',
+            'Artist',
+            'Influencer',
+            'Coach',
+            'Consultant'
         ];
         
-        for (const pattern of bioPatterns) {
-            const match = bodyText.match(pattern);
-            if (match && match[1]) {
-                let bioText = match[1].trim();
-                // Clean up the bio
-                bioText = bioText.replace(/\s*(posts?|followers?|following)\s*/gi, ' ');
-                bioText = bioText.replace(/\s+/g, ' ').trim();
-                if (bioText.length > 5 && !bioText.match(/^\d+$/)) {
-                    data.bio = bioText;
-                    break;
+        for (const indicator of bioIndicators) {
+            if (bodyText.includes(indicator)) {
+                log.info(`Found bio indicator: ${indicator}`);
+                // Get the text around this indicator
+                const index = bodyText.indexOf(indicator);
+                const beforeText = bodyText.substring(Math.max(0, index - 100), index);
+                const afterText = bodyText.substring(index, index + 200);
+                
+                log.info(`Text before indicator: ${beforeText}`);
+                log.info(`Text after indicator: ${afterText}`);
+                
+                // Extract a reasonable bio from the surrounding text
+                // Look for text that follows common patterns
+                const bioMatch = afterText.match(/^([^0-9]+?)(?=\d|\s*$)/);
+                if (bioMatch && bioMatch[1]) {
+                    let extractedBio = bioMatch[1].trim();
+                    // Clean up the bio
+                    extractedBio = extractedBio.replace(/\s+/g, ' ');
+                    extractedBio = extractedBio.replace(/^(posts|followers|following)\s*/i, '');
+                    
+                    if (extractedBio.length > 10 && extractedBio.length < 300) {
+                        data.bio = extractedBio;
+                        log.info(`Extracted bio: ${data.bio}`);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    
+    // Alternative bio extraction: look for text patterns between name and stats
+    if (!data.bio && data.fullName) {
+        const nameIndex = bodyText.indexOf(data.fullName);
+        if (nameIndex !== -1) {
+            // Get text after the name
+            const textAfterName = bodyText.substring(nameIndex + data.fullName.length, nameIndex + data.fullName.length + 300);
+            log.info(`Text after name: ${textAfterName}`);
+            
+            // Look for bio-like text (not numbers)
+            const bioMatch = textAfterName.match(/^\s*([^0-9]+?)(?=\d+\s*(?:posts|followers|following))/i);
+            if (bioMatch && bioMatch[1]) {
+                let extractedBio = bioMatch[1].trim();
+                extractedBio = extractedBio.replace(/\s+/g, ' ');
+                if (extractedBio.length > 10 && extractedBio.length < 300) {
+                    data.bio = extractedBio;
+                    log.info(`Extracted bio after name: ${data.bio}`);
                 }
             }
         }
@@ -351,35 +404,80 @@ function extractProfileData($, url) {
                      $('[title*="verified" i], [alt*="verified" i]').length > 0 ||
                      $('body').html().toLowerCase().includes('verified');
     
-    // Strategy 7: Extract website links (improved)
-    // First try to find linktr.ee or other common bio link services
+    // Strategy 7: Extract website links (improved with debugging)
+    log.info('Starting website extraction...');
+    
+    // First try to find common bio link services in body text
     const linkPatterns = [
-        /linktr\.ee\/[\w\.-]+/gi,
-        /bio\.link\/[\w\.-]+/gi,
-        /linkin\.bio\/[\w\.-]+/gi,
-        /beacons\.ai\/[\w\.-]+/gi
+        /(linktr\.ee\/[\w\.-]+)/gi,
+        /(bio\.link\/[\w\.-]+)/gi,
+        /(linkin\.bio\/[\w\.-]+)/gi,
+        /(beacons\.ai\/[\w\.-]+)/gi,
+        /(bit\.ly\/[\w\.-]+)/gi,
+        /(tinyurl\.com\/[\w\.-]+)/gi
     ];
     
     for (const pattern of linkPatterns) {
-        const match = bodyText.match(pattern);
-        if (match) {
-            data.website = match[0].startsWith('http') ? match[0] : `https://${match[0]}`;
+        const matches = [...bodyText.matchAll(pattern)];
+        if (matches.length > 0) {
+            const foundLink = matches[0][1];
+            data.website = foundLink.startsWith('http') ? foundLink : `https://${foundLink}`;
+            log.info(`Found website via pattern: ${data.website}`);
             break;
         }
     }
     
-    // Fallback: look for any external links
+    // Debug: Search for common website indicators
+    const websiteIndicators = ['linktr.ee', 'bio.link', '.com', 'www.'];
+    websiteIndicators.forEach(indicator => {
+        if (bodyText.toLowerCase().includes(indicator)) {
+            log.info(`Found website indicator "${indicator}" in body text`);
+            const index = bodyText.toLowerCase().indexOf(indicator);
+            const context = bodyText.substring(Math.max(0, index - 30), index + 50);
+            log.info(`Context around "${indicator}": ${context}`);
+        }
+    });
+    
+    // Alternative: look for any links in href attributes
     if (!data.website) {
+        log.info('Searching for links in href attributes...');
         $('a[href]').each((i, link) => {
             const href = $(link).attr('href');
+            const linkText = $(link).text();
+            log.info(`Found link: ${href} with text: ${linkText}`);
+            
             if (href && 
                 href.startsWith('http') && 
                 !href.includes('instagram.com') && 
                 !href.includes('facebook.com') &&
+                !href.includes('google.com') &&
                 !data.website) {
                 data.website = href;
+                log.info(`Selected website from href: ${data.website}`);
             }
         });
+    }
+    
+    // Last resort: look for URL patterns in text
+    if (!data.website) {
+        log.info('Last resort: searching for URL patterns in text...');
+        const urlPatterns = [
+            /(https?:\/\/[^\s]+)/gi,
+            /([a-zA-Z0-9-]+\.[a-zA-Z]{2,}\/[^\s]*)/gi
+        ];
+        
+        for (const pattern of urlPatterns) {
+            const matches = [...bodyText.matchAll(pattern)];
+            for (const match of matches) {
+                const foundUrl = match[1];
+                if (!foundUrl.includes('instagram.com') && !foundUrl.includes('facebook.com')) {
+                    data.website = foundUrl.startsWith('http') ? foundUrl : `https://${foundUrl}`;
+                    log.info(`Found URL pattern: ${data.website}`);
+                    break;
+                }
+            }
+            if (data.website) break;
+        }
     }
     
     return data;
