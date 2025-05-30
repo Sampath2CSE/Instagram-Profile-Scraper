@@ -98,13 +98,8 @@ const crawler = new CheerioCrawler({
                 throw new Error('Profile not found or unavailable');
             }
             
-            // Extract profile data using multiple strategies
-            const profileData = extractProfileData($, url, body);
-            
-            // Post-process to ensure we get bio and website from ANY source
-            profileData.bio = profileData.bio || extractBioFromAnywhere($, body);
-            profileData.website = profileData.website || extractWebsiteFromAnywhere($, body);
-            profileData.isVerified = profileData.isVerified || detectVerification($, body);
+            // Extract profile data using the enhanced extraction
+            const profileData = extractProfileData($, url);
             
             // Extract recent posts if requested
             if (includeRecentPosts) {
@@ -690,6 +685,29 @@ function detectVerification($, bodyHtml) {
     
     log.info('❌ No verification indicators found');
     return false;
+}
+
+// Extract recent posts from the HTML
+function extractRecentPosts($, maxPosts) {
+    const posts = [];
+    
+    // Look for post links
+    $('a[href*="/p/"], a[href*="/reel/"]').each((i, link) => {
+        if (posts.length >= maxPosts) return false;
+        
+        const href = $(link).attr('href');
+        const img = $(link).find('img').first();
+        
+        if (href && img.length) {
+            posts.push({
+                url: href.startsWith('http') ? href : `https://www.instagram.com${href}`,
+                imageUrl: img.attr('src'),
+                altText: img.attr('alt') || ''
+            });
+        }
+    });
+    
+    return posts;
 }
 
 // Extract recent posts from the HTML
