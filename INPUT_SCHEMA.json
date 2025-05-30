@@ -22,7 +22,8 @@
       "description": "Proxy settings to avoid IP blocking. Recommended to use Apify Proxy for better success rates.",
       "prefill": {
         "useApifyProxy": true,
-        "apifyProxyGroups": ["RESIDENTIAL"]
+        "apifyProxyGroups": ["RESIDENTIAL"],
+        "apifyProxyCountry": "US"
       },
       "editor": "proxy"
     },
@@ -79,12 +80,6 @@
       "default": true,
       "sectionCaption": "Anti-Detection Features",
       "sectionDescription": "Advanced settings to avoid bot detection and blocking"
-    },
-    "sessionPersistence": {
-      "title": "Session-Based IP Rotation",
-      "type": "boolean",
-      "description": "Use session-based IP rotation for more human-like proxy behavior",
-      "default": true
     },
     "respectRateLimit": {
       "title": "Respect Rate Limits",

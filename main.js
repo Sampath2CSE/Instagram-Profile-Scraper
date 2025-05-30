@@ -9,14 +9,17 @@ await Actor.init();
 const input = await Actor.getInput();
 const {
     profileUrls = [],
-    proxy = { useApifyProxy: true, apifyProxyGroups: ['RESIDENTIAL'] },
+    proxy = { 
+        useApifyProxy: true, 
+        apifyProxyGroups: ['RESIDENTIAL'],
+        apifyProxyCountry: 'US'
+    },
     maxRetries = 3,
     minDelay = 3000,
     maxDelay = 7000,
     includeRecentPosts = false,
     maxPostsToScrape = 12,
     useAdvancedFingerprinting = true,
-    sessionPersistence = true,
     respectRateLimit = true,
     maxConcurrency = 2,
     randomizeUserBehavior = true
@@ -28,12 +31,7 @@ if (!profileUrls || profileUrls.length === 0) {
 }
 
 // Set up proxy configuration with advanced settings
-const proxyConfiguration = await Actor.createProxyConfiguration({
-    ...proxy,
-    // Use session-based IP rotation for more human-like behavior
-    sessionRotationEnabled: sessionPersistence,
-    countryCode: 'US', // Default to US proxies for Instagram
-});
+const proxyConfiguration = await Actor.createProxyConfiguration(proxy);
 
 // Advanced browser fingerprinting configuration
 const fingerprintOptions = {
@@ -544,7 +542,7 @@ const requests = profileUrls.map(urlInput => {
 });
 
 log.info(`Starting advanced Instagram scraper for ${requests.length} profiles`);
-log.info(`Configuration: Anti-fingerprinting=${useAdvancedFingerprinting}, Concurrency=${maxConcurrency}, Proxy=${proxy.useApifyProxy ? 'Enabled' : 'Disabled'}`);
+log.info(`Configuration: Anti-fingerprinting=${useAdvancedFingerprinting}, Concurrency=${maxConcurrency}, Proxy=${proxy.useApifyProxy ? 'Enabled' : 'Disabled'}, Country=${proxy.apifyProxyCountry || 'Auto'}`);
 
 // Run the crawler
 await crawler.run(requests);
