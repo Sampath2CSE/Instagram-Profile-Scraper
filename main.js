@@ -2,25 +2,6 @@
 import { Actor } from 'apify';
 import { CheerioCrawler, log } from 'crawlee';
 
-// Helper function to parse window._sharedData JSON
-function parseInstagramSharedData(htmlContent) {
-    let sharedData = null;
-    // Regex to find the window._sharedData object in a script tag
-    const regex = /<script[^>]*>window\._sharedData\s*=\s*({[^;]+});<\/script>/;
-    const match = htmlContent.match(regex);
-
-    if (match && match[1]) {
-        try {
-            sharedData = JSON.parse(match[1]);
-        } catch (e) {
-            log.warning(`Failed to parse window._sharedData JSON: ${e.message}`);
-        }
-    } else {
-        log.warning('window._sharedData script tag not found or regex failed.');
-    }
-    return sharedData;
-}
-
 // Initialize the Actor
 await Actor.init();
 
@@ -117,19 +98,8 @@ const crawler = new CheerioCrawler({
                 throw new Error('Profile not found or unavailable');
             }
             
-            // Extract profile data using multiple strategies, prioritizing sharedData
-            const profileData = extractProfileData($, url, body);
-            
-            // Apply ultimate fallbacks if data is still missing
-            if (profileData.bio === null) {
-                profileData.bio = extractBioFromAnywhere($, body);
-            }
-            if (profileData.website === null) {
-                profileData.website = extractWebsiteFromAnywhere($, body);
-            }
-            if (profileData.isVerified === false) {
-                profileData.isVerified = detectVerification($, body);
-            }
+            // Extract profile data using the enhanced extraction
+            const profileData = extractProfileData($, url);
             
             // Extract recent posts if requested
             if (includeRecentPosts) {
@@ -142,6 +112,25 @@ const crawler = new CheerioCrawler({
             
             log.info(`✅ Successfully extracted data for: ${profileData.username || 'Unknown'}`);
             log.info(`📊 Stats: ${profileData.followers || 'N/A'} followers, ${profileData.following || 'N/A'} following`);
+            
+            // Enhanced logging to debug bio extraction
+            if (profileData.bio) {
+                log.info(`📝 Bio extracted: ${profileData.bio.substring(0, 100)}${profileData.bio.length > 100 ? '...' : ''}`);
+            } else {
+                log.warning('⚠️ Bio is null - checking fallbacks...');
+            }
+            
+            if (profileData.website) {
+                log.info(`🔗 Website extracted: ${profileData.website}`);
+            } else {
+                log.warning('⚠️ Website is null - checking fallbacks...');
+            }
+            if (profileData.bio) {
+                log.info(`📝 Bio: ${profileData.bio.substring(0, 100)}...`);
+            }
+            if (profileData.website) {
+                log.info(`🔗 Website: ${profileData.website}`);
+            }
             
             // Save to dataset
             await Actor.pushData(profileData);
@@ -163,8 +152,8 @@ const crawler = new CheerioCrawler({
     }
 });
 
-// Extract profile data from Instagram HTML (robust extraction for all profile types)
-function extractProfileData($, url, bodyHtml) {
+// Extract profile data from Instagram HTML (targeting exact API data like official scraper)
+function extractProfileData($, url) {
     const data = {
         username: null,
         fullName: null,
@@ -174,330 +163,181 @@ function extractProfileData($, url, bodyHtml) {
         following: null,
         postsCount: null,
         website: null,
-        isVerified: false
+        isVerified: false,
+        isBusinessAccount: false
     };
     
-    // --- STRATEGY 0: Extract from window._sharedData JSON (Most Reliable) ---
-    const sharedData = parseInstagramSharedData(bodyHtml);
-    if (sharedData && sharedData.entry_data && sharedData.entry_data.ProfilePage) {
-        const profilePage = sharedData.entry_data.ProfilePage[0];
-        if (profilePage && profilePage.graphql && profilePage.graphql.user) {
-            const user = profilePage.graphql.user;
-
-            data.username = user.username || data.username;
-            data.fullName = user.full_name || data.fullName;
-            data.bio = user.biography || data.bio;
-            data.profileImage = user.profile_pic_url_hd || user.profile_pic_url || data.profileImage;
-            data.isVerified = user.is_verified || data.isVerified;
-            data.website = user.external_url || data.website;
-
-            // Stats
-            if (user.edge_followed_by && user.edge_followed_by.count !== undefined) {
-                data.followers = user.edge_followed_by.count;
-            }
-            if (user.edge_follow && user.edge_follow.count !== undefined) {
-                data.following = user.edge_follow.count;
-            }
-            if (user.edge_owner_to_timeline_media && user.edge_owner_to_timeline_media.count !== undefined) {
-                data.postsCount = user.edge_owner_to_timeline_media.count;
-            }
-            log.info('✨ Successfully extracted initial data from window._sharedData.');
-        }
-    }
-    
-    // Strategy 1: Extract from JSON-LD structured data (Fallback)
-    const scripts = $('script[type="application/ld+json"]');
-    let jsonData = null;
-    
-    scripts.each((i, script) => {
-        try {
-            const content = $(script).html();
-            if (content && content.includes('"@type":"Person"')) {
-                jsonData = JSON.parse(content);
-                return false; // Break the loop
-            }
-        } catch (e) {
-            // Continue if JSON parsing fails
-        }
-    });
-    
-    if (jsonData) {
-        data.username = data.username || jsonData.alternateName || jsonData.name;
-        data.fullName = data.fullName || jsonData.name;
-        data.bio = data.bio || jsonData.description;
-        data.profileImage = data.profileImage || jsonData.image;
-        data.website = data.website || (jsonData.url !== url ? jsonData.url : null);
-        
-        if (jsonData.interactionStatistic) {
-            jsonData.interactionStatistic.forEach(stat => {
-                if (stat.interactionType === 'https://schema.org/FollowAction') {
-                    data.followers = data.followers || parseInt(stat.userInteractionCount) || null;
-                }
-            });
-        }
-    }
-    
-    // Strategy 2: Extract from meta tags (Fallback)
-    const ogTitle = $('meta[property="og:title"]').attr('content');
-    const ogDescription = $('meta[property="og:description"]').attr('content');
-    const ogImage = $('meta[property="og:image"]').attr('content');
-    
-    if (!data.username && ogTitle) {
-        const usernamePatterns = [
-            /\(@([^)]+)\)/, // "Name (@username)"
-            /^([^(•]+)/, // Just the name part before (•
-        ];
-        
-        for (const pattern of usernamePatterns) {
-            const match = ogTitle.match(pattern);
-            if (match) {
-                data.username = match[1].trim().replace('@', '');
-                break;
-            }
-        }
-    }
-    
-    if (!data.username) {
-        const urlParts = url.split('/').filter(Boolean);
-        data.username = urlParts[urlParts.length - 1];
-    }
-    
-    if (!data.fullName && ogTitle) {
-        let cleanName = ogTitle;
-        cleanName = cleanName.replace(/\s*•.*$/, '');
-        cleanName = cleanName.replace(/\s*\(@[^)]+\)/, '');
-        cleanName = cleanName.replace(/\s*Instagram photos and videos.*$/, '');
-        data.fullName = cleanName.trim() || null;
-    }
-    
-    if (!data.profileImage && ogImage) {
-        data.profileImage = ogImage;
-    }
-    
-    // Strategy 3: Extract stats from meta description (Fallback)
-    if (ogDescription) {
-        const patterns = [
-            /(\d+(?:,\d+)*[KMB]?)\s*Followers?,\s*(\d+(?:,\d+)*[KMB]?)\s*Following,\s*(\d+(?:,\d+)*[KMB]?)\s*Posts?\s*-\s*(.+)/i,
-            /(\d+(?:,\d+)*[KMB]?)\s*followers?,\s*(\d+(?:,\d+)*[KMB]?)\s*following,\s*(\d+(?:,\d+)*[KMB]?)\s*posts?/i,
-        ];
-        
-        for (const pattern of patterns) {
-            const match = ogDescription.match(pattern);
-            if (match && match.length >= 4 && match[1] && match[2] && match[3]) {
-                data.followers = data.followers || parseInstagramCount(match[1]);
-                data.following = data.following || parseInstagramCount(match[2]);
-                data.postsCount = data.postsCount || parseInstagramCount(match[3]);
-                break;
-            }
-        }
-    }
-    
-    // Strategy 4: Extract stats from page body text (Lowest Priority Fallback)
-    const bodyText = $('body').text();
-    if (data.followers === null || data.following === null || data.postsCount === null) {
-        if (data.followers === null) {
-            const followerPatterns = [
-                /(\d+(?:[,\.]\d+)*[KMB]?)\s*followers?/gi,
-                /followers?\s*(\d+(?:[,\.]\d+)*[KMB]?)/gi
-            ];
-            
-            for (const pattern of followerPatterns) {
-                const matches = [...bodyText.matchAll(pattern)];
-                if (matches.length > 0) {
-                    data.followers = parseInstagramCount(matches[0][1]);
-                    break;
-                }
-            }
-        }
-        
-        if (data.following === null) {
-            const followingPatterns = [
-                /(\d+(?:[,\.]\d+)*[KMB]?)\s*following/gi,
-                /following\s*(\d+(?:[,\.]\d+)*[KMB]?)/gi
-            ];
-            
-            for (const pattern of followingPatterns) {
-                const matches = [...bodyText.matchAll(pattern)];
-                if (matches.length > 0) {
-                    data.following = parseInstagramCount(matches[0][1]);
-                    break;
-                }
-            }
-        }
-        
-        if (data.postsCount === null) {
-            const postsPatterns = [
-                /(\d+(?:[,\.]\d+)*[KMB]?)\s*posts?/gi,
-                /posts?\s*(\d+(?:[,\.]\d+)*[KMB]?)/gi
-            ];
-            
-            for (const pattern of postsPatterns) {
-                const matches = [...bodyText.matchAll(pattern)];
-                if (matches.length > 0) {
-                    data.postsCount = parseInstagramCount(matches[0][1]);
-                    break;
-                }
-            }
-        }
-    }
-    
-    // Ensure `null` for non-extracted values if they are 0 by parsing
-    data.followers = data.followers === 0 ? null : data.followers;
-    data.following = data.following === 0 ? null : data.following;
-    data.postsCount = data.postsCount === 0 ? null : data.postsCount;
-
-    return data;
-}
-
-// Aggressive bio extraction from ALL possible sources (Fallback)
-function extractBioFromAnywhere($, bodyHtml) {
-    log.info('🔍 Aggressive bio extraction (fallback) starting...');
-    
-    let foundBio = null;
-    
-    // Method 1: Look in ALL script tags for JSON data (less specific than sharedData)
+    // Strategy 1: Extract from Instagram's internal API data (same as official scraper)
     $('script').each((i, script) => {
-        if (foundBio) return false;
         const content = $(script).html();
-        if (content) {
-            const bioMatches = content.match(/"biography":\s*"(.*?)(?<!\\)"/g); // More robust regex for escaped quotes
-            if (bioMatches) {
-                for (const match of bioMatches) {
-                    const bioTextMatch = match.match(/"biography":\s*"(.*?)(?<!\\)"/);
-                    if (bioTextMatch && bioTextMatch[1]) {
-                        let bioText = bioTextMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"'); // Handle newlines and escaped quotes
-                        if (bioText && bioText.length > 3) {
-                            log.info(`📝 Found bio in script (fallback): ${bioText}`);
-                            foundBio = bioText;
+        if (content && content.length > 1000) { // Only check substantial scripts
+            try {
+                // Look for the main profile data in Instagram's internal API responses
+                // This is the same data the official scraper uses
+                
+                // Pattern 1: GraphQL user data
+                const graphqlUserPattern = /"graphql":\s*{[^}]*"user":\s*({[^{}]*"biography"[^{}]*})/;
+                const graphqlMatch = content.match(graphqlUserPattern);
+                if (graphqlMatch) {
+                    try {
+                        const userObj = JSON.parse(graphqlMatch[1]);
+                        if (userObj && userObj.username) {
+                            data.username = userObj.username;
+                            data.fullName = userObj.full_name || userObj.fullName;
+                            data.bio = userObj.biography;
+                            data.followers = userObj.edge_followed_by?.count || userObj.followers_count || userObj.followersCount;
+                            data.following = userObj.edge_follow?.count || userObj.follows_count || userObj.followsCount;
+                            data.postsCount = userObj.edge_owner_to_timeline_media?.count || userObj.posts_count || userObj.postsCount;
+                            data.profileImage = userObj.profile_pic_url || userObj.profilePicUrl;
+                            data.website = userObj.external_url || userObj.externalUrl;
+                            data.isVerified = userObj.is_verified || userObj.verified || false;
+                            data.isBusinessAccount = userObj.is_business_account || userObj.isBusinessAccount || false;
+                            
+                            log.info(`📊 Extracted from GraphQL user data: ${data.username}`);
+                            return false; // Break out of script loop
+                        }
+                    } catch (e) {
+                        // Continue if parsing fails
+                    }
+                }
+                
+                // Pattern 2: Profile page data (what feeds the official scraper)
+                const profilePagePattern = /"ProfilePage":\s*\[{[^}]*"user":\s*({[^{}]*"biography"[^{}]*})/;
+                const profileMatch = content.match(profilePagePattern);
+                if (profileMatch) {
+                    try {
+                        const userObj = JSON.parse(profileMatch[1]);
+                        if (userObj && userObj.username && !data.username) {
+                            data.username = userObj.username;
+                            data.fullName = userObj.full_name || userObj.fullName;
+                            data.bio = userObj.biography;
+                            data.followers = userObj.edge_followed_by?.count || userObj.followers_count;
+                            data.following = userObj.edge_follow?.count || userObj.follows_count;
+                            data.postsCount = userObj.edge_owner_to_timeline_media?.count || userObj.posts_count;
+                            data.profileImage = userObj.profile_pic_url;
+                            data.website = userObj.external_url;
+                            data.isVerified = userObj.is_verified || false;
+                            data.isBusinessAccount = userObj.is_business_account || false;
+                            
+                            log.info(`📊 Extracted from ProfilePage data: ${data.username}`);
+                            return false;
+                        }
+                    } catch (e) {
+                        // Continue if parsing fails
+                    }
+                }
+                
+                // Pattern 3: Direct API response data
+                const apiDataPattern = /"data":\s*{[^}]*"user":\s*({[^{}]*"biography"[^{}]*})/;
+                const apiMatch = content.match(apiDataPattern);
+                if (apiMatch && !data.username) {
+                    try {
+                        const userObj = JSON.parse(apiMatch[1]);
+                        if (userObj && userObj.username) {
+                            data.username = userObj.username;
+                            data.fullName = userObj.full_name;
+                            data.bio = userObj.biography;
+                            data.followers = userObj.edge_followed_by?.count || userObj.follower_count;
+                            data.following = userObj.edge_follow?.count || userObj.following_count;
+                            data.postsCount = userObj.edge_owner_to_timeline_media?.count || userObj.media_count;
+                            data.profileImage = userObj.profile_pic_url;
+                            data.website = userObj.external_url;
+                            data.isVerified = userObj.is_verified || false;
+                            data.isBusinessAccount = userObj.is_business_account || false;
+                            
+                            log.info(`📊 Extracted from API data: ${data.username}`);
+                            return false;
+                        }
+                    } catch (e) {
+                        // Continue if parsing fails
+                    }
+                }
+                
+                // Pattern 4: Look for individual fields if complete object not found
+                if (!data.username) {
+                    // Extract individual fields from the largest script (likely to contain profile data)
+                    if (content.length > 50000) { // Only check very large scripts
+                        const usernameMatch = content.match(/"username":\s*"([^"]+)"/);
+                        const fullNameMatch = content.match(/"full_name":\s*"([^"]+)"/);
+                        const biographyMatch = content.match(/"biography":\s*"([^"\\]*(?:\\.[^"\\]*)*)"/);
+                        const followersMatch = content.match(/"edge_followed_by":\s*{\s*"count":\s*(\d+)/);
+                        const followingMatch = content.match(/"edge_follow":\s*{\s*"count":\s*(\d+)/);
+                        const postsMatch = content.match(/"edge_owner_to_timeline_media":\s*{\s*"count":\s*(\d+)/);
+                        const profilePicMatch = content.match(/"profile_pic_url":\s*"([^"]+)"/);
+                        const externalUrlMatch = content.match(/"external_url":\s*"([^"]+)"/);
+                        const verifiedMatch = content.match(/"is_verified":\s*(true|false)/);
+                        const businessMatch = content.match(/"is_business_account":\s*(true|false)/);
+                        
+                        if (usernameMatch) {
+                            data.username = usernameMatch[1];
+                            data.fullName = fullNameMatch ? fullNameMatch[1] : null;
+                            
+                            if (biographyMatch) {
+                                try {
+                                    data.bio = JSON.parse(`"${biographyMatch[1]}"`);
+                                } catch (e) {
+                                    data.bio = biographyMatch[1].replace(/\\"/g, '"').replace(/\\n/g, ' ');
+                                }
+                            }
+                            
+                            data.followers = followersMatch ? parseInt(followersMatch[1]) : null;
+                            data.following = followingMatch ? parseInt(followingMatch[1]) : null;
+                            data.postsCount = postsMatch ? parseInt(postsMatch[1]) : null;
+                            data.profileImage = profilePicMatch ? profilePicMatch[1] : null;
+                            
+                            if (externalUrlMatch) {
+                                try {
+                                    data.website = JSON.parse(`"${externalUrlMatch[1]}"`);
+                                } catch (e) {
+                                    data.website = externalUrlMatch[1].replace(/\\\//g, '/');
+                                }
+                            }
+                            
+                            data.isVerified = verifiedMatch ? verifiedMatch[1] === 'true' : false;
+                            data.isBusinessAccount = businessMatch ? businessMatch[1] === 'true' : false;
+                            
+                            log.info(`📊 Extracted individual fields: ${data.username}`);
                             return false;
                         }
                     }
                 }
+                
+            } catch (e) {
+                // Continue if this script fails
             }
         }
     });
     
-    if (foundBio) return foundBio;
-    
-    // Method 2: Look in raw HTML for common bio patterns (least reliable)
-    const bioKeywords = ['Digital creator', 'Creator', 'Entrepreneur', 'Founder', 'CEO', 'Coach', 'Artist', 'Automation', 'Expert'];
-    const bodyText = $('body').text();
-    
-    for (const keyword of bioKeywords) {
-        if (bodyText.includes(keyword)) {
-            log.info(`🎯 Found keyword "${keyword}" in body (fallback)`);
-            const regex = new RegExp(`(?<=\\s|^)${keyword}[^.!?]{5,200}[.!?]?`, 'i'); // Improved regex to capture a sentence/phrase
-            const match = bodyText.match(regex);
-            if (match && match[0]) {
-                let bio = match[0].trim();
-                bio = bio.replace(/\s+/g, ' ');
-                if (bio.length > 10 && bio.length < 500) {
-                    log.info(`📝 Extracted bio around keyword (fallback): ${bio}`);
-                    return bio;
-                }
-            }
-        }
-    }
-    
-    log.info('❌ No bio found with aggressive extraction (fallback)');
-    return null;
-}
-
-// Aggressive website extraction from ALL possible sources (Fallback)
-function extractWebsiteFromAnywhere($, bodyHtml) {
-    log.info('🔗 Aggressive website extraction (fallback) starting...');
-    
-    let foundWebsite = null;
-    
-    // Method 1: Look in ALL script tags for external URLs
-    $('script').each((i, script) => {
-        if (foundWebsite) return false;
+    // Strategy 2: Fallback to meta tags if JSON parsing failed
+    if (!data.username) {
+        const ogTitle = $('meta[property="og:title"]').attr('content');
+        const ogDescription = $('meta[property="og:description"]').attr('content');
+        const ogImage = $('meta[property="og:image"]').attr('content');
         
-        const content = $(script).html();
-        if (content) {
-            // Look for external_url in JSON
-            const urlMatches = content.match(/"external_url":\s*"([^"]+)"/g);
-            if (urlMatches) {
-                for (const match of urlMatches) {
-                    const url = match.match(/"external_url":\s*"([^"]+)"/)[1];
-                    if (url && !url.includes('instagram.com')) {
-                        log.info(`🔗 Found external_url in script (fallback): ${url}`);
-                        foundWebsite = url;
-                        return false;
-                    }
-                }
-            }
-            
-            // Look for any linktr.ee or common bio links
-            const bioLinkMatches = content.match(/(https?:\/\/(?:www\.)?(?:linktr\.ee|bio\.link|linkin\.bio|beacons\.ai|bit\.ly|tinyurl\.com)\/[^"'\s]+)/gi);
-            if (bioLinkMatches) {
-                const link = bioLinkMatches[0];
-                log.info(`🔗 Found bio link in script (fallback): ${link}`);
-                foundWebsite = link;
-                return false;
+        if (ogTitle) {
+            const usernameMatch = ogTitle.match(/\(@([^)]+)\)/);
+            data.username = usernameMatch ? usernameMatch[1] : url.split('/').filter(Boolean).pop();
+            data.fullName = ogTitle.replace(/\s*\(@[^)]+\).*$/, '').trim();
+        }
+        
+        if (ogImage) {
+            data.profileImage = ogImage;
+        }
+        
+        // Extract stats from meta description
+        if (ogDescription) {
+            const statsMatch = ogDescription.match(/(\d+(?:,\d+)*[KMB]?)\s*Followers?,\s*(\d+(?:,\d+)*[KMB]?)\s*Following,\s*(\d+(?:,\d+)*[KMB]?)\s*Posts?/i);
+            if (statsMatch) {
+                data.followers = parseInstagramCount(statsMatch[1]);
+                data.following = parseInstagramCount(statsMatch[2]);
+                data.postsCount = parseInstagramCount(statsMatch[3]);
             }
         }
-    });
-    
-    if (foundWebsite) return foundWebsite;
-    
-    // Method 2: Look in raw HTML for URL patterns
-    const urlPatterns = [
-        /(https?:\/\/(?:www\.)?(?:linktr\.ee|bio\.link|linkin\.bio|beacons\.ai|bit\.ly|tinyurl\.com)\/[\w\.-]+)/gi,
-        /(https?:\/\/(?:www\.)?[\w\.-]+\.[\w]{2,4}\/[^\s"']+)/gi // More general URL pattern
-    ];
-    
-    const fullHtml = bodyHtml || $('body').html();
-    
-    for (const pattern of urlPatterns) {
-        const matches = [...fullHtml.matchAll(pattern)];
-        if (matches.length > 0) {
-            const foundUrl = matches[0][1];
-            // Filter out Instagram's own URLs or common social media links if not the primary external URL
-            if (!foundUrl.includes('instagram.com') && !foundUrl.includes('facebook.com') && !foundUrl.includes('twitter.com')) {
-                log.info(`🔗 Found URL via pattern (fallback): ${foundUrl}`);
-                return foundUrl;
-            }
-        }
+        
+        log.info(`📊 Extracted from meta tags: ${data.username}`);
     }
     
-    log.info('❌ No website found with aggressive extraction (fallback)');
-    return null;
-}
-
-// Aggressive verification detection (Fallback)
-function detectVerification($, bodyHtml) {
-    log.info('✅ Checking verification status (fallback)...');
-    
-    const fullHtml = (bodyHtml || $('body').html()).toLowerCase();
-    
-    // Check for specific SVG or icon elements that Instagram uses for verification
-    const verificationSelectors = [
-        'svg[aria-label*="verified" i]',
-        'img[src*="verified_badge" i]',
-        'span[aria-label*="verified" i]',
-        'span[title*="verified" i]',
-        'div[role="img"][aria-label*="verified" i]', // New selector for potential image roles
-        '._ab6l', // Common Instagram class for the badge, but can change
-        '[data-testid="verified_badge"]' // Sometimes elements have data-testid attributes
-    ];
-    
-    for (const selector of verificationSelectors) {
-        if ($(selector).length > 0) {
-            log.info(`✅ Found verification via selector (fallback): ${selector}`);
-            return true;
-        }
-    }
-    
-    // Less reliable: Check for "verified" text in a more controlled context
-    // Avoid general body text search as it can lead to false positives (e.g., "we verified your account")
-    if ($('h1').text().toLowerCase().includes('verified') || $('h2').text().toLowerCase().includes('verified')) {
-        log.info('✅ Found "verified" in a heading (fallback)');
-        return true;
-    }
-    
-    log.info('❌ No verification indicators found (fallback)');
-    return false;
+    return data;
 }
 
 // Extract recent posts from the HTML
@@ -569,7 +409,7 @@ const requests = profileUrls.map(urlInput => {
 });
 
 log.info(`🚀 Starting HTTP-based Instagram scraper for ${requests.length} profile(s)`);
-log.info(`⚙️  Using same approach as Apify's official Instagram scraper`);
+log.info(`⚙️  Using same approach as Apify's official Instagram scraper`);
 
 // Run the crawler
 await crawler.run(requests);
