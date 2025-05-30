@@ -128,7 +128,7 @@ const crawler = new CheerioCrawler({
     }
 });
 
-// Extract profile data from Instagram HTML (works with their current structure)
+// Extract profile data from Instagram HTML (improved parsing)
 function extractProfileData($, url) {
     const data = {
         username: null,
@@ -163,57 +163,146 @@ function extractProfileData($, url) {
         data.bio = jsonData.description;
         data.profileImage = jsonData.image;
         data.website = jsonData.url !== url ? jsonData.url : null;
+        
+        // Extract stats from interactionStatistic if available
+        if (jsonData.interactionStatistic) {
+            jsonData.interactionStatistic.forEach(stat => {
+                if (stat.interactionType === 'https://schema.org/FollowAction') {
+                    data.followers = parseInt(stat.userInteractionCount) || null;
+                }
+            });
+        }
     }
     
     // Fallback extraction from meta tags
     if (!data.username) {
-        data.username = $('meta[property="og:title"]').attr('content')?.split('(')[0]?.trim();
+        const ogTitle = $('meta[property="og:title"]').attr('content');
+        if (ogTitle) {
+            // Extract username from "Username (@username)" format
+            const usernameMatch = ogTitle.match(/\(@([^)]+)\)/);
+            if (usernameMatch) {
+                data.username = usernameMatch[1];
+            } else {
+                data.username = ogTitle.split('(')[0]?.trim();
+            }
+        }
     }
     
     if (!data.username) {
         // Extract from URL as last resort
-        data.username = url.split('/').filter(Boolean).pop();
+        const urlParts = url.split('/').filter(Boolean);
+        data.username = urlParts[urlParts.length - 1];
     }
     
+    // Extract bio from meta description
     if (!data.bio) {
-        data.bio = $('meta[property="og:description"]').attr('content');
+        const metaDesc = $('meta[property="og:description"]').attr('content') || 
+                        $('meta[name="description"]').attr('content');
+        if (metaDesc) {
+            data.bio = metaDesc;
+            
+            // Parse stats from meta description format: "X Followers, Y Following, Z Posts - Bio text"
+            const statsMatch = metaDesc.match(/(\d+(?:,\d+)*)\s*Followers?,\s*(\d+(?:,\d+)*)\s*Following,\s*(\d+(?:,\d+)*)\s*Posts?\s*-\s*(.+)/i);
+            if (statsMatch) {
+                data.followers = parseInstagramCount(statsMatch[1]);
+                data.following = parseInstagramCount(statsMatch[2]);
+                data.postsCount = parseInstagramCount(statsMatch[3]);
+                data.bio = statsMatch[4].trim();
+                
+                // Extract username and full name from bio if needed
+                if (!data.fullName && statsMatch[4]) {
+                    const bioText = statsMatch[4];
+                    const fromMatch = bioText.match(/from (.+?) \(/);
+                    if (fromMatch) {
+                        data.fullName = fromMatch[1].trim();
+                    }
+                }
+            }
+        }
     }
     
     if (!data.profileImage) {
         data.profileImage = $('meta[property="og:image"]').attr('content');
     }
     
-    // Extract stats from page text using regex
-    const pageText = $('body').text();
-    
-    // Look for follower counts
-    const followerMatch = pageText.match(/(\d+(?:[,\.]\d+)*[KMB]?)\s*(?:followers?|Followers?)/i);
-    if (followerMatch) {
-        data.followers = parseInstagramCount(followerMatch[1]);
-    }
-    
-    // Look for following counts
-    const followingMatch = pageText.match(/(\d+(?:[,\.]\d+)*[KMB]?)\s*(?:following|Following)/i);
-    if (followingMatch) {
-        data.following = parseInstagramCount(followingMatch[1]);
-    }
-    
-    // Look for post counts
-    const postsMatch = pageText.match(/(\d+(?:[,\.]\d+)*[KMB]?)\s*(?:posts?|Posts?)/i);
-    if (postsMatch) {
-        data.postsCount = parseInstagramCount(postsMatch[1]);
+    // If stats weren't found in meta description, try parsing from page text
+    if (!data.followers || !data.following || !data.postsCount) {
+        const pageText = $('body').text();
+        
+        // More aggressive regex patterns for stats
+        if (!data.followers) {
+            const followerPatterns = [
+                /(\d+(?:[,\.]\d+)*[KMB]?)\s*(?:followers?|Followers?)/gi,
+                /followers?[:\s]*(\d+(?:[,\.]\d+)*[KMB]?)/gi
+            ];
+            
+            for (const pattern of followerPatterns) {
+                const match = pageText.match(pattern);
+                if (match && match[1]) {
+                    data.followers = parseInstagramCount(match[1]);
+                    break;
+                }
+            }
+        }
+        
+        if (!data.following) {
+            const followingPatterns = [
+                /(\d+(?:[,\.]\d+)*[KMB]?)\s*(?:following|Following)/gi,
+                /following[:\s]*(\d+(?:[,\.]\d+)*[KMB]?)/gi
+            ];
+            
+            for (const pattern of followingPatterns) {
+                const match = pageText.match(pattern);
+                if (match && match[1]) {
+                    data.following = parseInstagramCount(match[1]);
+                    break;
+                }
+            }
+        }
+        
+        if (!data.postsCount) {
+            const postsPatterns = [
+                /(\d+(?:[,\.]\d+)*[KMB]?)\s*(?:posts?|Posts?)/gi,
+                /posts?[:\s]*(\d+(?:[,\.]\d+)*[KMB]?)/gi
+            ];
+            
+            for (const pattern of postsPatterns) {
+                const match = pageText.match(pattern);
+                if (match && match[1]) {
+                    data.postsCount = parseInstagramCount(match[1]);
+                    break;
+                }
+            }
+        }
     }
     
     // Check for verification
-    data.isVerified = pageText.includes('Verified') || $('[title*="verified" i]').length > 0;
+    data.isVerified = $('body').text().includes('Verified') || 
+                     $('[title*="verified" i], [alt*="verified" i]').length > 0 ||
+                     $('body').html().includes('verified');
     
-    // Extract website from links
+    // Extract website from links (exclude Instagram internal links)
     $('a[href]').each((i, link) => {
         const href = $(link).attr('href');
-        if (href && href.startsWith('http') && !href.includes('instagram.com') && !data.website) {
+        if (href && 
+            href.startsWith('http') && 
+            !href.includes('instagram.com') && 
+            !href.includes('facebook.com') &&
+            !href.includes('facebookcorewwwi.onion') &&
+            !data.website) {
             data.website = href;
         }
     });
+    
+    // Clean up the data
+    if (data.bio && data.bio.startsWith('See Instagram photos and videos from')) {
+        const bioMatch = data.bio.match(/See Instagram photos and videos from (.+?) \((@[^)]+)\)/);
+        if (bioMatch) {
+            data.fullName = bioMatch[1].trim();
+            data.username = bioMatch[2].replace('@', '');
+            data.bio = null; // This isn't a real bio
+        }
+    }
     
     return data;
 }
