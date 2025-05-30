@@ -1,240 +1,5 @@
 // main.js - Working Instagram Profile Scraper (HTTP-based like Apify's official version)
-import { Actor }
-
-// Aggressive bio extraction from ALL possible sources
-function extractBioFromAnywhere($, bodyHtml) {
-    log.info('🔍 Aggressive bio extraction starting...');
-    
-    // Method 1: Look in ALL script tags for JSON data
-    let foundBio = null;
-    
-    $('script').each((i, script) => {
-        if (foundBio) return false; // Break if already found
-        
-        const content = $(script).html();
-        if (content) {
-            // Look for biography in JSON
-            const bioMatches = content.match(/"biography":\s*"([^"]+)"/g);
-            if (bioMatches) {
-                for (const match of bioMatches) {
-                    const bioText = match.match(/"biography":\s*"([^"]+)"/)[1];
-                    if (bioText && bioText.length > 3) {
-                        log.info(`📝 Found bio in script: ${bioText}`);
-                        foundBio = bioText;
-                        return false; // Break
-                    }
-                }
-            }
-            
-            // Look for any description fields
-            const descMatches = content.match(/"description":\s*"([^"]+)"/g);
-            if (descMatches) {
-                for (const match of descMatches) {
-                    const descText = match.match(/"description":\s*"([^"]+)"/)[1];
-                    if (descText && descText.length > 10 && !descText.includes('See Instagram photos')) {
-                        log.info(`📝 Found description in script: ${descText}`);
-                        foundBio = descText;
-                        return false; // Break
-                    }
-                }
-            }
-        }
-    });
-    
-    if (foundBio) return foundBio;
-    
-    // Method 2: Look in raw HTML for common bio patterns
-    const bioKeywords = ['Digital creator', 'Creator', 'Entrepreneur', 'Founder', 'CEO', 'Coach', 'Artist', 'Automation', 'Expert'];
-    const bodyText = $('body').text();
-    
-    for (const keyword of bioKeywords) {
-        if (bodyText.includes(keyword)) {
-            log.info(`🎯 Found keyword "${keyword}" in body`);
-            
-            // Extract text around this keyword
-            const regex = new RegExp(`${keyword}[^0-9]*?(?=\\d+|$)`, 'i');
-            const match = bodyText.match(regex);
-            if (match && match[0]) {
-                let bio = match[0].trim();
-                bio = bio.replace(/\s+/g, ' ');
-                if (bio.length > 10 && bio.length < 500) {
-                    log.info(`📝 Extracted bio around keyword: ${bio}`);
-                    return bio;
-                }
-            }
-        }
-    }
-    
-    // Method 3: Look in HTML attributes and data attributes
-    const bioSelectors = [
-        '[data-bio]',
-        '[data-description]', 
-        '.bio',
-        '.description',
-        '.profile-bio'
-    ];
-    
-    for (const selector of bioSelectors) {
-        const element = $(selector);
-        if (element.length) {
-            const bioText = element.text() || element.attr('data-bio') || element.attr('data-description');
-            if (bioText && bioText.length > 10) {
-                log.info(`📝 Found bio in selector ${selector}: ${bioText}`);
-                return bioText.trim();
-            }
-        }
-    }
-    
-    log.info('❌ No bio found with aggressive extraction');
-    return null;
-}
-
-// Aggressive website extraction from ALL possible sources  
-function extractWebsiteFromAnywhere($, bodyHtml) {
-    log.info('🔗 Aggressive website extraction starting...');
-    
-    // Method 1: Look in ALL script tags for external URLs
-    let foundWebsite = null;
-    
-    $('script').each((i, script) => {
-        if (foundWebsite) return false; // Break if already found
-        
-        const content = $(script).html();
-        if (content) {
-            // Look for external_url in JSON
-            const urlMatches = content.match(/"external_url":\s*"([^"]+)"/g);
-            if (urlMatches) {
-                for (const match of urlMatches) {
-                    const url = match.match(/"external_url":\s*"([^"]+)"/)[1];
-                    if (url && !url.includes('instagram.com')) {
-                        log.info(`🔗 Found external_url in script: ${url}`);
-                        foundWebsite = url;
-                        return false; // Break
-                    }
-                }
-            }
-            
-            // Look for any linktr.ee or common bio links
-            const bioLinkMatches = content.match(/(linktr\.ee\/[^"'\s]+|bio\.link\/[^"'\s]+)/gi);
-            if (bioLinkMatches) {
-                const link = bioLinkMatches[0];
-                log.info(`🔗 Found bio link in script: ${link}`);
-                foundWebsite = link.startsWith('http') ? link : `https://${link}`;
-                return false; // Break
-            }
-        }
-    });
-    
-    if (foundWebsite) return foundWebsite;
-    
-    // Method 2: Look in raw HTML for URL patterns
-    const urlPatterns = [
-        /(linktr\.ee\/[\w\.-]+)/gi,
-        /(bio\.link\/[\w\.-]+)/gi,
-        /(linkin\.bio\/[\w\.-]+)/gi,
-        /(beacons\.ai\/[\w\.-]+)/gi,
-        /(bit\.ly\/[\w\.-]+)/gi,
-        /(tinyurl\.com\/[\w\.-]+)/gi,
-        /([\w-]+\.com\/[\w\.-]*)/gi
-    ];
-    
-    const fullHtml = bodyHtml || $('body').html();
-    
-    for (const pattern of urlPatterns) {
-        const matches = [...fullHtml.matchAll(pattern)];
-        if (matches.length > 0) {
-            const foundUrl = matches[0][1];
-            if (!foundUrl.includes('instagram.com') && !foundUrl.includes('facebook.com')) {
-                const website = foundUrl.startsWith('http') ? foundUrl : `https://${foundUrl}`;
-                log.info(`🔗 Found URL via pattern: ${website}`);
-                return website;
-            }
-        }
-    }
-    
-    // Method 3: Look in ALL link elements
-    const allLinks = [];
-    $('a').each((i, link) => {
-        const href = $(link).attr('href');
-        const text = $(link).text();
-        if (href) {
-            allLinks.push({ href, text });
-        }
-    });
-    
-    log.info(`🔍 Found ${allLinks.length} total links`);
-    
-    for (const link of allLinks) {
-        if (link.href && 
-            link.href.startsWith('http') && 
-            !link.href.includes('instagram.com') && 
-            !link.href.includes('facebook.com') &&
-            !link.href.includes('google.com')) {
-            log.info(`🔗 Found external link: ${link.href} (text: ${link.text})`);
-            return link.href;
-        }
-    }
-    
-    log.info('❌ No website found with aggressive extraction');
-    return null;
-}
-
-// Aggressive verification detection
-function detectVerification($, bodyHtml) {
-    log.info('✅ Checking verification status...');
-    
-    const bodyText = $('body').text().toLowerCase();
-    const fullHtml = (bodyHtml || $('body').html()).toLowerCase();
-    
-    // Check for various verification indicators
-    const verificationIndicators = [
-        'verified',
-        'blue checkmark',
-        'blue check',
-        'verified account',
-        'verification badge',
-        'checkmark'
-    ];
-    
-    for (const indicator of verificationIndicators) {
-        if (bodyText.includes(indicator) || fullHtml.includes(indicator)) {
-            log.info(`✅ Found verification indicator: ${indicator}`);
-            return true;
-        }
-    }
-    
-    // Check for verification in script tags
-    let isVerified = false;
-    $('script').each((i, script) => {
-        const content = $(script).html();
-        if (content && content.toLowerCase().includes('verified')) {
-            log.info('✅ Found verification in script tag');
-            isVerified = true;
-            return false; // Break
-        }
-    });
-    
-    if (isVerified) return true;
-    
-    // Check for SVG or icon elements that might indicate verification
-    const verificationSelectors = [
-        'svg[aria-label*="verified" i]',
-        '[title*="verified" i]',
-        '[alt*="verified" i]',
-        '.verified',
-        '[data-verified]'
-    ];
-    
-    for (const selector of verificationSelectors) {
-        if ($(selector).length > 0) {
-            log.info(`✅ Found verification via selector: ${selector}`);
-            return true;
-        }
-    }
-    
-    log.info('❌ No verification indicators found');
-    return false;
-} from 'apify';
+import { Actor } from 'apify';
 import { CheerioCrawler, log } from 'crawlee';
 
 // Initialize the Actor
@@ -323,30 +88,6 @@ const crawler = new CheerioCrawler({
             log.info(`Page title: ${pageTitle}`);
             log.info(`Meta description: ${metaDesc}`);
             log.info(`Body text length: ${bodyText.length}`);
-            
-            // Debug: Show a sample of the body text to understand the structure
-            const bodyPreview = bodyText.substring(0, 500);
-            log.info(`Body text preview: ${bodyPreview}`);
-            
-            // Debug: Look for bio-related text
-            const bioKeywords = ['Digital creator', 'creator', 'entrepreneur', 'linktr.ee', 'bio.link'];
-            bioKeywords.forEach(keyword => {
-                if (bodyText.toLowerCase().includes(keyword.toLowerCase())) {
-                    log.info(`Found keyword "${keyword}" in body text`);
-                    const index = bodyText.toLowerCase().indexOf(keyword.toLowerCase());
-                    const context = bodyText.substring(Math.max(0, index - 50), index + 100);
-                    log.info(`Context around "${keyword}": ${context}`);
-                }
-            });
-            
-            // Debug: Look for stats in body text
-            const followerMatches = bodyText.match(/(\d+(?:,\d+)*[KMB]?)\s*(?:followers?|Followers?)/gi);
-            const followingMatches = bodyText.match(/(\d+(?:,\d+)*[KMB]?)\s*(?:following|Following)/gi);
-            const postsMatches = bodyText.match(/(\d+(?:,\d+)*[KMB]?)\s*(?:posts?|Posts?)/gi);
-            
-            log.info(`Found follower patterns: ${JSON.stringify(followerMatches)}`);
-            log.info(`Found following patterns: ${JSON.stringify(followingMatches)}`);
-            log.info(`Found posts patterns: ${JSON.stringify(postsMatches)}`);
             
             // Check for login redirect or blocks
             if (pageTitle.includes('Login') || body.includes('login_and_signup_page')) {
@@ -449,9 +190,6 @@ function extractProfileData($, url) {
     const ogDescription = $('meta[property="og:description"]').attr('content');
     const ogImage = $('meta[property="og:image"]').attr('content');
     
-    log.info(`OG Title: ${ogTitle}`);
-    log.info(`OG Description: ${ogDescription}`);
-    
     // Extract username from various sources
     if (!data.username) {
         if (ogTitle) {
@@ -497,75 +235,7 @@ function extractProfileData($, url) {
         data.profileImage = ogImage;
     }
     
-    // Strategy 3: Extract bio from body text (simplified approach)
-    const bodyText = $('body').text();
-    
-    if (!data.bio) {
-        // Simple approach: look for common bio indicators and extract surrounding text
-        const bioIndicators = [
-            'Digital creator',
-            'Creator',
-            'Entrepreneur', 
-            'Founder',
-            'CEO',
-            'Artist',
-            'Influencer',
-            'Coach',
-            'Consultant'
-        ];
-        
-        for (const indicator of bioIndicators) {
-            if (bodyText.includes(indicator)) {
-                log.info(`Found bio indicator: ${indicator}`);
-                // Get the text around this indicator
-                const index = bodyText.indexOf(indicator);
-                const beforeText = bodyText.substring(Math.max(0, index - 100), index);
-                const afterText = bodyText.substring(index, index + 200);
-                
-                log.info(`Text before indicator: ${beforeText}`);
-                log.info(`Text after indicator: ${afterText}`);
-                
-                // Extract a reasonable bio from the surrounding text
-                // Look for text that follows common patterns
-                const bioMatch = afterText.match(/^([^0-9]+?)(?=\d|\s*$)/);
-                if (bioMatch && bioMatch[1]) {
-                    let extractedBio = bioMatch[1].trim();
-                    // Clean up the bio
-                    extractedBio = extractedBio.replace(/\s+/g, ' ');
-                    extractedBio = extractedBio.replace(/^(posts|followers|following)\s*/i, '');
-                    
-                    if (extractedBio.length > 10 && extractedBio.length < 300) {
-                        data.bio = extractedBio;
-                        log.info(`Extracted bio: ${data.bio}`);
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    
-    // Alternative bio extraction: look for text patterns between name and stats
-    if (!data.bio && data.fullName) {
-        const nameIndex = bodyText.indexOf(data.fullName);
-        if (nameIndex !== -1) {
-            // Get text after the name
-            const textAfterName = bodyText.substring(nameIndex + data.fullName.length, nameIndex + data.fullName.length + 300);
-            log.info(`Text after name: ${textAfterName}`);
-            
-            // Look for bio-like text (not numbers)
-            const bioMatch = textAfterName.match(/^\s*([^0-9]+?)(?=\d+\s*(?:posts|followers|following))/i);
-            if (bioMatch && bioMatch[1]) {
-                let extractedBio = bioMatch[1].trim();
-                extractedBio = extractedBio.replace(/\s+/g, ' ');
-                if (extractedBio.length > 10 && extractedBio.length < 300) {
-                    data.bio = extractedBio;
-                    log.info(`Extracted bio after name: ${data.bio}`);
-                }
-            }
-        }
-    }
-    
-    // Strategy 4: Extract stats from meta description first, then body text
+    // Strategy 3: Extract stats from meta description first, then body text
     if (ogDescription) {
         // Try multiple patterns for meta description
         const patterns = [
@@ -590,7 +260,9 @@ function extractProfileData($, url) {
         }
     }
     
-    // Strategy 5: Extract stats from page body text (fallback)
+    // Strategy 4: Extract stats from page body text (fallback)
+    const bodyText = $('body').text();
+    
     if (!data.followers || !data.following || !data.postsCount) {
         // More aggressive regex patterns for stats
         if (!data.followers) {
@@ -639,16 +311,117 @@ function extractProfileData($, url) {
         }
     }
     
-    // Strategy 6: Check for verification
-    data.isVerified = bodyText.toLowerCase().includes('verified') || 
-                     $('[title*="verified" i], [alt*="verified" i]').length > 0 ||
-                     $('body').html().toLowerCase().includes('verified');
+    return data;
+}
+
+// Aggressive bio extraction from ALL possible sources
+function extractBioFromAnywhere($, bodyHtml) {
+    log.info('🔍 Aggressive bio extraction starting...');
     
-    // Strategy 7: Extract website links (improved with debugging)
-    log.info('Starting website extraction...');
+    // Method 1: Look in ALL script tags for JSON data
+    let foundBio = null;
     
-    // First try to find common bio link services in body text
-    const linkPatterns = [
+    $('script').each((i, script) => {
+        if (foundBio) return false; // Break if already found
+        
+        const content = $(script).html();
+        if (content) {
+            // Look for biography in JSON
+            const bioMatches = content.match(/"biography":\s*"([^"]+)"/g);
+            if (bioMatches) {
+                for (const match of bioMatches) {
+                    const bioText = match.match(/"biography":\s*"([^"]+)"/)[1];
+                    if (bioText && bioText.length > 3) {
+                        log.info(`📝 Found bio in script: ${bioText}`);
+                        foundBio = bioText;
+                        return false; // Break
+                    }
+                }
+            }
+            
+            // Look for any description fields
+            const descMatches = content.match(/"description":\s*"([^"]+)"/g);
+            if (descMatches) {
+                for (const match of descMatches) {
+                    const descText = match.match(/"description":\s*"([^"]+)"/)[1];
+                    if (descText && descText.length > 10 && !descText.includes('See Instagram photos')) {
+                        log.info(`📝 Found description in script: ${descText}`);
+                        foundBio = descText;
+                        return false; // Break
+                    }
+                }
+            }
+        }
+    });
+    
+    if (foundBio) return foundBio;
+    
+    // Method 2: Look in raw HTML for common bio patterns
+    const bioKeywords = ['Digital creator', 'Creator', 'Entrepreneur', 'Founder', 'CEO', 'Coach', 'Artist', 'Automation', 'Expert'];
+    const bodyText = $('body').text();
+    
+    for (const keyword of bioKeywords) {
+        if (bodyText.includes(keyword)) {
+            log.info(`🎯 Found keyword "${keyword}" in body`);
+            
+            // Extract text around this keyword
+            const regex = new RegExp(`${keyword}[^0-9]*?(?=\\d+|$)`, 'i');
+            const match = bodyText.match(regex);
+            if (match && match[0]) {
+                let bio = match[0].trim();
+                bio = bio.replace(/\s+/g, ' ');
+                if (bio.length > 10 && bio.length < 500) {
+                    log.info(`📝 Extracted bio around keyword: ${bio}`);
+                    return bio;
+                }
+            }
+        }
+    }
+    
+    log.info('❌ No bio found with aggressive extraction');
+    return null;
+}
+
+// Aggressive website extraction from ALL possible sources  
+function extractWebsiteFromAnywhere($, bodyHtml) {
+    log.info('🔗 Aggressive website extraction starting...');
+    
+    // Method 1: Look in ALL script tags for external URLs
+    let foundWebsite = null;
+    
+    $('script').each((i, script) => {
+        if (foundWebsite) return false; // Break if already found
+        
+        const content = $(script).html();
+        if (content) {
+            // Look for external_url in JSON
+            const urlMatches = content.match(/"external_url":\s*"([^"]+)"/g);
+            if (urlMatches) {
+                for (const match of urlMatches) {
+                    const url = match.match(/"external_url":\s*"([^"]+)"/)[1];
+                    if (url && !url.includes('instagram.com')) {
+                        log.info(`🔗 Found external_url in script: ${url}`);
+                        foundWebsite = url;
+                        return false; // Break
+                    }
+                }
+            }
+            
+            // Look for any linktr.ee or common bio links
+            const bioLinkMatches = content.match(/(linktr\.ee\/[^"'\s]+|bio\.link\/[^"'\s]+)/gi);
+            if (bioLinkMatches) {
+                const link = bioLinkMatches[0];
+                log.info(`🔗 Found bio link in script: ${link}`);
+                foundWebsite = link.startsWith('http') ? link : `https://${link}`;
+                return false; // Break
+            }
+        }
+    });
+    
+    if (foundWebsite) return foundWebsite;
+    
+    // Method 2: Look in raw HTML for URL patterns
+    const urlPatterns = [
         /(linktr\.ee\/[\w\.-]+)/gi,
         /(bio\.link\/[\w\.-]+)/gi,
         /(linkin\.bio\/[\w\.-]+)/gi,
@@ -657,70 +430,79 @@ function extractProfileData($, url) {
         /(tinyurl\.com\/[\w\.-]+)/gi
     ];
     
-    for (const pattern of linkPatterns) {
-        const matches = [...bodyText.matchAll(pattern)];
+    const fullHtml = bodyHtml || $('body').html();
+    
+    for (const pattern of urlPatterns) {
+        const matches = [...fullHtml.matchAll(pattern)];
         if (matches.length > 0) {
-            const foundLink = matches[0][1];
-            data.website = foundLink.startsWith('http') ? foundLink : `https://${foundLink}`;
-            log.info(`Found website via pattern: ${data.website}`);
-            break;
+            const foundUrl = matches[0][1];
+            if (!foundUrl.includes('instagram.com') && !foundUrl.includes('facebook.com')) {
+                const website = foundUrl.startsWith('http') ? foundUrl : `https://${foundUrl}`;
+                log.info(`🔗 Found URL via pattern: ${website}`);
+                return website;
+            }
         }
     }
     
-    // Debug: Search for common website indicators
-    const websiteIndicators = ['linktr.ee', 'bio.link', '.com', 'www.'];
-    websiteIndicators.forEach(indicator => {
-        if (bodyText.toLowerCase().includes(indicator)) {
-            log.info(`Found website indicator "${indicator}" in body text`);
-            const index = bodyText.toLowerCase().indexOf(indicator);
-            const context = bodyText.substring(Math.max(0, index - 30), index + 50);
-            log.info(`Context around "${indicator}": ${context}`);
+    log.info('❌ No website found with aggressive extraction');
+    return null;
+}
+
+// Aggressive verification detection
+function detectVerification($, bodyHtml) {
+    log.info('✅ Checking verification status...');
+    
+    const bodyText = $('body').text().toLowerCase();
+    const fullHtml = (bodyHtml || $('body').html()).toLowerCase();
+    
+    // Check for various verification indicators
+    const verificationIndicators = [
+        'verified',
+        'blue checkmark',
+        'blue check',
+        'verified account',
+        'verification badge',
+        'checkmark'
+    ];
+    
+    for (const indicator of verificationIndicators) {
+        if (bodyText.includes(indicator) || fullHtml.includes(indicator)) {
+            log.info(`✅ Found verification indicator: ${indicator}`);
+            return true;
+        }
+    }
+    
+    // Check for verification in script tags
+    let isVerified = false;
+    $('script').each((i, script) => {
+        const content = $(script).html();
+        if (content && content.toLowerCase().includes('verified')) {
+            log.info('✅ Found verification in script tag');
+            isVerified = true;
+            return false; // Break
         }
     });
     
-    // Alternative: look for any links in href attributes
-    if (!data.website) {
-        log.info('Searching for links in href attributes...');
-        $('a[href]').each((i, link) => {
-            const href = $(link).attr('href');
-            const linkText = $(link).text();
-            log.info(`Found link: ${href} with text: ${linkText}`);
-            
-            if (href && 
-                href.startsWith('http') && 
-                !href.includes('instagram.com') && 
-                !href.includes('facebook.com') &&
-                !href.includes('google.com') &&
-                !data.website) {
-                data.website = href;
-                log.info(`Selected website from href: ${data.website}`);
-            }
-        });
-    }
+    if (isVerified) return true;
     
-    // Last resort: look for URL patterns in text
-    if (!data.website) {
-        log.info('Last resort: searching for URL patterns in text...');
-        const urlPatterns = [
-            /(https?:\/\/[^\s]+)/gi,
-            /([a-zA-Z0-9-]+\.[a-zA-Z]{2,}\/[^\s]*)/gi
-        ];
-        
-        for (const pattern of urlPatterns) {
-            const matches = [...bodyText.matchAll(pattern)];
-            for (const match of matches) {
-                const foundUrl = match[1];
-                if (!foundUrl.includes('instagram.com') && !foundUrl.includes('facebook.com')) {
-                    data.website = foundUrl.startsWith('http') ? foundUrl : `https://${foundUrl}`;
-                    log.info(`Found URL pattern: ${data.website}`);
-                    break;
-                }
-            }
-            if (data.website) break;
+    // Check for SVG or icon elements that might indicate verification
+    const verificationSelectors = [
+        'svg[aria-label*="verified" i]',
+        '[title*="verified" i]',
+        '[alt*="verified" i]',
+        '.verified',
+        '[data-verified]'
+    ];
+    
+    for (const selector of verificationSelectors) {
+        if ($(selector).length > 0) {
+            log.info(`✅ Found verification via selector: ${selector}`);
+            return true;
         }
     }
     
-    return data;
+    log.info('❌ No verification indicators found');
+    return false;
 }
 
 // Extract recent posts from the HTML
