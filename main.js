@@ -1,24 +1,6 @@
-// main.js - Instagram Profile Scraper with Per-Profile Proxy Rotation
+// main.js - Browser-Based Instagram Profile Scraper (Like successful actors)
 import { Actor } from 'apify';
-import { CheerioCrawler, log } from 'crawlee';
-
-// Helper function to parse window._sharedData JSON
-function parseInstagramSharedData(htmlContent) {
-    let sharedData = null;
-    const regex = /<script[^>]*>window\._sharedData\s*=\s*({[^;]+});<\/script>/;
-    const match = htmlContent.match(regex);
-
-    if (match && match[1]) {
-        try {
-            sharedData = JSON.parse(match[1]);
-        } catch (e) {
-            log.warning(`Failed to parse window._sharedData JSON: ${e.message}`);
-        }
-    } else {
-        log.warning('window._sharedData script tag not found or regex failed.');
-    }
-    return sharedData;
-}
+import { PlaywrightCrawler, log } from 'crawlee';
 
 // Initialize the Actor
 await Actor.init();
@@ -31,7 +13,9 @@ const {
     maxRetries = 3,
     includeRecentPosts = false,
     maxPostsToScrape = 12,
-    usePerProfileProxy = true // New option to enable per-profile proxy rotation
+    usePerProfileProxy = true,
+    waitForContent = 8000, // Wait time for content to load
+    blockResources = true  // Block images/videos for faster loading
 } = input;
 
 // Validate input
@@ -39,189 +23,198 @@ if (!profileUrls || profileUrls.length === 0) {
     throw new Error('No profile URLs provided. Please add at least one Instagram profile URL.');
 }
 
-// Create multiple proxy configurations for rotation
-const createProxyPool = async (baseProxyConfig, poolSize = 5) => {
+// Create proxy pool for browser-based scraping
+const createBrowserProxyPool = async (baseProxyConfig, poolSize = 5) => {
     const proxyPool = [];
-    
-    // Only use RESIDENTIAL proxies (most reliable for Instagram)
-    const proxyGroups = ['RESIDENTIAL']; 
-    const countries = ['US', 'GB', 'CA', 'AU', 'DE', 'FR', 'NL', 'SE', 'IT', 'ES']; // More countries for variety
+    const countries = ['US', 'GB', 'CA', 'AU', 'DE', 'FR', 'NL', 'SE', 'IT', 'ES'];
     
     for (let i = 0; i < poolSize; i++) {
         try {
             const proxyConfig = {
                 ...baseProxyConfig,
-                apifyProxyGroups: [proxyGroups[i % proxyGroups.length]],
+                apifyProxyGroups: ['RESIDENTIAL'],
                 apifyProxyCountry: countries[i % countries.length]
             };
             
-            log.info(`🔧 Attempting to create proxy config ${i + 1}: ${proxyGroups[i % proxyGroups.length]} - ${countries[i % countries.length]}`);
+            log.info(`🔧 Creating browser proxy config ${i + 1}: RESIDENTIAL - ${countries[i % countries.length]}`);
             
             const proxyConfiguration = await Actor.createProxyConfiguration(proxyConfig);
             proxyPool.push(proxyConfiguration);
             
-            log.info(`✅ Created proxy config ${i + 1}: ${proxyGroups[i % proxyGroups.length]} - ${countries[i % countries.length]}`);
+            log.info(`✅ Created browser proxy config ${i + 1}: RESIDENTIAL - ${countries[i % countries.length]}`);
             
         } catch (error) {
-            log.warning(`⚠️ Failed to create proxy config ${i + 1} (${countries[i % countries.length]}): ${error.message}`);
+            log.warning(`⚠️ Failed to create proxy config ${i + 1}: ${error.message}`);
             
-            // Fallback: try without country specification
+            // Fallback without country
             try {
-                const fallbackConfig = {
-                    ...baseProxyConfig,
-                    apifyProxyGroups: [proxyGroups[i % proxyGroups.length]]
-                    // No country specified - let Apify choose
-                };
-                
-                log.info(`🔄 Trying fallback proxy config ${i + 1} without country restriction...`);
-                const fallbackProxyConfiguration = await Actor.createProxyConfiguration(fallbackConfig);
-                proxyPool.push(fallbackProxyConfiguration);
-                
-                log.info(`✅ Created fallback proxy config ${i + 1}: ${proxyGroups[i % proxyGroups.length]} - AUTO`);
-                
+                const fallbackConfig = { ...baseProxyConfig, apifyProxyGroups: ['RESIDENTIAL'] };
+                const fallbackProxy = await Actor.createProxyConfiguration(fallbackConfig);
+                proxyPool.push(fallbackProxy);
+                log.info(`✅ Created fallback proxy config ${i + 1}: RESIDENTIAL - AUTO`);
             } catch (fallbackError) {
-                log.error(`❌ Failed to create fallback proxy config ${i + 1}: ${fallbackError.message}`);
-                // Continue with next iteration - we'll have fewer proxies but that's OK
+                log.error(`❌ Failed fallback proxy ${i + 1}: ${fallbackError.message}`);
             }
         }
     }
     
     if (proxyPool.length === 0) {
-        log.warning('⚠️ No proxy configurations created, falling back to single default proxy...');
-        // Create one default proxy configuration
+        log.warning('⚠️ No proxy configurations created, using default...');
         const defaultProxy = await Actor.createProxyConfiguration(baseProxyConfig);
         proxyPool.push(defaultProxy);
-        log.info('✅ Created default proxy configuration');
     }
     
     return proxyPool;
 };
 
-// Real browser headers that work with Instagram
-const getRandomHeaders = () => {
-    const userAgents = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0'
-    ];
-    
-    return {
-        'User-Agent': userAgents[Math.floor(Math.random() * userAgents.length)],
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Cache-Control': 'max-age=0',
-        'Sec-Ch-Ua': '"Google Chrome";v="125", "Chromium";v="125", "Not.A/Brand";v="24"',
-        'Sec-Ch-Ua-Mobile': '?0',
-        'Sec-Ch-Ua-Platform': '"Windows"',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Sec-Fetch-User': '?1',
-        'Upgrade-Insecure-Requests': '1',
-        'Connection': 'keep-alive',
-        'DNT': '1'
-    };
-};
-
-// Create proxy pool if per-profile proxy is enabled
+// Create proxy pool
 let proxyPool = [];
 if (usePerProfileProxy) {
-    log.info('🔄 Creating proxy pool for per-profile rotation...');
-    proxyPool = await createProxyPool(proxy, Math.min(profileUrls.length, 10));
-    log.info(`✅ Created ${proxyPool.length} proxy configurations`);
+    log.info('🔄 Creating browser proxy pool...');
+    proxyPool = await createBrowserProxyPool(proxy, Math.min(profileUrls.length, 10));
+    log.info(`✅ Created ${proxyPool.length} browser proxy configurations`);
 } else {
-    // Use single proxy configuration
     const singleProxy = await Actor.createProxyConfiguration(proxy);
     proxyPool = [singleProxy];
 }
 
-// Function to process a single profile with dedicated proxy
-async function processProfileWithDedicatedProxy(profileUrl, proxyIndex) {
+// Process each profile with a dedicated browser instance
+async function processProfileWithBrowser(profileUrl, proxyIndex) {
     const proxyConfiguration = proxyPool[proxyIndex % proxyPool.length];
     
-    log.info(`🎯 Processing ${profileUrl} with proxy config ${(proxyIndex % proxyPool.length) + 1}`);
+    log.info(`🌐 Processing ${profileUrl} with browser proxy config ${(proxyIndex % proxyPool.length) + 1}`);
     
-    // Create a dedicated crawler for this profile
-    const dedicatedCrawler = new CheerioCrawler({
+    // Create browser-based crawler for this profile
+    const browserCrawler = new PlaywrightCrawler({
         proxyConfiguration,
         maxRequestRetries: maxRetries,
-        maxConcurrency: 1, // Single profile processing
-        requestHandlerTimeoutSecs: 120, // Longer timeout for better success
+        maxConcurrency: 1,
+        requestHandlerTimeoutSecs: 180, // Longer timeout for browser
         
-        // More aggressive delays for dedicated proxy
-        maxRequestsPerMinute: 10, // Very conservative
+        // Browser launch options
+        launchContext: {
+            launchOptions: {
+                headless: true,
+                args: [
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-gpu',
+                    '--no-first-run',
+                    '--no-default-browser-check',
+                    '--disable-background-timer-throttling',
+                    '--disable-backgrounding-occluded-windows',
+                    '--disable-renderer-backgrounding'
+                ]
+            }
+        },
         
+        // Block resources for faster loading
         preNavigationHooks: [
-            async ({ request }) => {
-                // Add realistic headers
-                request.headers = {
-                    ...request.headers,
-                    ...getRandomHeaders()
-                };
+            async ({ page, request }) => {
+                // Block unnecessary resources
+                if (blockResources) {
+                    await page.route('**/*', (route) => {
+                        const resourceType = route.request().resourceType();
+                        if (['image', 'media', 'font', 'stylesheet'].includes(resourceType)) {
+                            route.abort();
+                        } else {
+                            route.continue();
+                        }
+                    });
+                }
                 
-                // Random delay between 5-10 seconds for dedicated processing
-                const delay = Math.random() * 5000 + 5000;
-                log.info(`⏳ Waiting ${Math.round(delay/1000)}s before processing ${profileUrl}`);
-                await new Promise(resolve => setTimeout(resolve, delay));
+                // Set realistic viewport and user agent
+                await page.setViewportSize({ width: 1366, height: 768 });
+                await page.setExtraHTTPHeaders({
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Accept-Encoding': 'gzip, deflate, br',
+                    'Cache-Control': 'no-cache',
+                    'Pragma': 'no-cache',
+                    'Sec-Fetch-Dest': 'document',
+                    'Sec-Fetch-Mode': 'navigate',
+                    'Sec-Fetch-Site': 'none',
+                    'Sec-Fetch-User': '?1',
+                    'Upgrade-Insecure-Requests': '1'
+                });
+                
+                log.info(`🌐 Browser navigating to: ${request.url}`);
             }
         ],
         
-        async requestHandler({ request, $, body }) {
+        async requestHandler({ page, request }) {
             const url = request.url;
-            log.info(`🔍 Processing Instagram profile: ${url} (Proxy ${(proxyIndex % proxyPool.length) + 1})`);
+            log.info(`🔍 Processing Instagram profile: ${url} (Browser Proxy ${(proxyIndex % proxyPool.length) + 1})`);
             
             try {
-                // Check if we got the actual Instagram page content
-                const pageTitle = $('title').text();
-                const metaDesc = $('meta[property="og:description"]').attr('content');
-                const bodyText = $('body').text();
+                // Wait for page to fully load
+                log.info('⏳ Waiting for page content to load...');
+                await page.waitForTimeout(waitForContent);
                 
-                log.info(`📄 Page title: ${pageTitle}`);
-                log.info(`📝 Meta description: ${metaDesc}`);
-                log.info(`📊 Body text length: ${bodyText.length}`);
-                
-                // Check for login redirect or blocks
-                if (pageTitle.includes('Login') || body.includes('login_and_signup_page')) {
-                    throw new Error(`Instagram redirected to login page - trying different proxy (Proxy ${(proxyIndex % proxyPool.length) + 1})`);
+                // Wait for potential dynamic content
+                try {
+                    await page.waitForSelector('article, main, [role="main"]', { timeout: 10000 });
+                    log.info('✅ Main content area detected');
+                } catch (e) {
+                    log.warning('⚠️ Main content selector not found, continuing...');
                 }
                 
-                if (body.includes('Page Not Found') || $('h2').text().includes("Sorry, this page isn't available")) {
+                // Check for login redirect
+                const currentUrl = page.url();
+                const pageTitle = await page.title();
+                
+                log.info(`📄 Final URL: ${currentUrl}`);
+                log.info(`📄 Page title: ${pageTitle}`);
+                
+                if (currentUrl.includes('/accounts/login') || pageTitle.includes('Login')) {
+                    throw new Error('Instagram redirected to login page - profile may be private or proxy blocked');
+                }
+                
+                if (pageTitle.includes('Page Not Found') || currentUrl.includes('not-found')) {
                     throw new Error('Profile not found or unavailable');
                 }
                 
-                // Extract profile data
-                const profileData = extractProfileData($, url, body);
+                // Get page content for analysis
+                const htmlContent = await page.content();
+                const bodyText = await page.$eval('body', el => el.innerText).catch(() => '');
                 
-                // Apply ultimate fallbacks if data is still missing
-                if (profileData.bio === null) {
-                    log.info('🔍 Bio is null - applying aggressive fallback extraction...');
-                    profileData.bio = extractBioFromAnywhere($, body);
+                log.info(`📊 Page content length: ${htmlContent.length}`);
+                log.info(`📊 Body text length: ${bodyText.length}`);
+                
+                // Extract profile data using browser context
+                const profileData = await extractProfileDataFromBrowser(page, url, htmlContent);
+                
+                // Enhanced bio extraction for browser context
+                if (!profileData.bio) {
+                    log.info('🔍 Bio not found in initial extraction, trying browser-specific methods...');
+                    profileData.bio = await extractBioFromBrowser(page);
                 }
-                if (profileData.website === null) {
-                    log.info('🔗 Website is null - applying aggressive fallback extraction...');
-                    profileData.website = extractWebsiteFromAnywhere($, body);
-                }
-                if (profileData.isVerified === false) {
-                    profileData.isVerified = detectVerification($, body);
+                
+                // Enhanced website extraction
+                if (!profileData.website) {
+                    log.info('🔗 Website not found, trying browser-specific extraction...');
+                    profileData.website = await extractWebsiteFromBrowser(page);
                 }
                 
                 // Extract recent posts if requested
                 if (includeRecentPosts) {
-                    profileData.recentPosts = extractRecentPosts($, maxPostsToScrape);
+                    profileData.recentPosts = await extractRecentPostsFromBrowser(page, maxPostsToScrape);
                 }
                 
                 // Add metadata
                 profileData.scrapedAt = new Date().toISOString();
                 profileData.profileUrl = url;
-                profileData.proxyUsed = `Config ${(proxyIndex % proxyPool.length) + 1}`;
+                profileData.proxyUsed = `Browser Config ${(proxyIndex % proxyPool.length) + 1}`;
+                profileData.extractionMethod = 'browser';
                 
-                log.info(`✅ Successfully extracted data for: ${profileData.username || 'Unknown'} (Proxy ${(proxyIndex % proxyPool.length) + 1})`);
+                log.info(`✅ Successfully extracted data for: ${profileData.username || 'Unknown'} (Browser)`);
                 log.info(`📊 Stats: ${profileData.followers || 'N/A'} followers, ${profileData.following || 'N/A'} following`);
-                log.info(`📝 Bio: ${profileData.bio ? 'Found' : 'Not found'}`);
-                log.info(`🔗 Website: ${profileData.website ? 'Found' : 'Not found'}`);
+                log.info(`📝 Bio: ${profileData.bio ? 'Found ✅' : 'Not found ❌'}`);
+                log.info(`🔗 Website: ${profileData.website ? 'Found ✅' : 'Not found ❌'}`);
+                
+                if (profileData.bio) {
+                    log.info(`📝 Bio preview: ${profileData.bio.substring(0, 100)}...`);
+                }
                 
                 // Save to dataset
                 await Actor.pushData(profileData);
@@ -229,32 +222,372 @@ async function processProfileWithDedicatedProxy(profileUrl, proxyIndex) {
                 return profileData;
                 
             } catch (error) {
-                log.error(`❌ Failed to process ${url} with proxy ${(proxyIndex % proxyPool.length) + 1}: ${error.message}`);
+                log.error(`❌ Failed to process ${url} with browser: ${error.message}`);
                 
                 const errorData = {
                     url,
                     error: error.message,
                     timestamp: new Date().toISOString(),
                     status: 'failed',
-                    proxyUsed: `Config ${(proxyIndex % proxyPool.length) + 1}`
+                    proxyUsed: `Browser Config ${(proxyIndex % proxyPool.length) + 1}`,
+                    extractionMethod: 'browser'
                 };
                 
                 await Actor.pushData(errorData);
-                throw error; // Re-throw to trigger retry with different proxy if needed
+                throw error;
             }
         },
         
         failedRequestHandler({ request, error }) {
-            log.error(`💥 Request failed completely: ${request.url} - ${error.message} (Proxy ${(proxyIndex % proxyPool.length) + 1})`);
+            log.error(`💥 Browser request failed: ${request.url} - ${error.message}`);
         }
     });
     
-    // Process the single profile
-    await dedicatedCrawler.run([{ url: profileUrl }]);
-    await dedicatedCrawler.teardown();
+    // Process the profile
+    await browserCrawler.run([{ url: profileUrl }]);
+    await browserCrawler.teardown();
 }
 
-// Process profiles sequentially with different proxies
+// Extract profile data from browser page
+async function extractProfileDataFromBrowser(page, url, htmlContent) {
+    const data = {
+        username: null,
+        fullName: null,
+        bio: null,
+        profileImage: null,
+        followers: null,
+        following: null,
+        postsCount: null,
+        website: null,
+        isVerified: false
+    };
+    
+    // Method 1: Try to extract from window._sharedData
+    log.info('🔍 Extracting from window._sharedData...');
+    const sharedData = await page.evaluate(() => {
+        return window._sharedData || null;
+    }).catch(() => null);
+    
+    if (sharedData && sharedData.entry_data && sharedData.entry_data.ProfilePage) {
+        const profilePage = sharedData.entry_data.ProfilePage[0];
+        if (profilePage && profilePage.graphql && profilePage.graphql.user) {
+            const user = profilePage.graphql.user;
+            
+            data.username = user.username;
+            data.fullName = user.full_name;
+            data.bio = user.biography;
+            data.profileImage = user.profile_pic_url_hd || user.profile_pic_url;
+            data.isVerified = user.is_verified;
+            data.website = user.external_url;
+            
+            if (user.edge_followed_by) data.followers = user.edge_followed_by.count;
+            if (user.edge_follow) data.following = user.edge_follow.count;
+            if (user.edge_owner_to_timeline_media) data.postsCount = user.edge_owner_to_timeline_media.count;
+            
+            log.info('✅ Successfully extracted from window._sharedData');
+            return data;
+        }
+    }
+    
+    // Method 2: Extract from page elements using browser selectors
+    log.info('🔍 Extracting from page elements...');
+    
+    try {
+        // Get username from URL or page
+        data.username = await page.evaluate(() => {
+            const h1 = document.querySelector('h1');
+            if (h1) {
+                const text = h1.innerText;
+                const match = text.match(/@([a-zA-Z0-9_.]+)/);
+                if (match) return match[1];
+            }
+            return null;
+        }).catch(() => null);
+        
+        if (!data.username) {
+            const urlParts = url.split('/').filter(Boolean);
+            data.username = urlParts[urlParts.length - 1];
+        }
+        
+        // Get full name
+        data.fullName = await page.evaluate(() => {
+            const selectors = [
+                'h1', 'h2',
+                '[data-testid="user-name"]',
+                'header h1',
+                'header h2'
+            ];
+            
+            for (const selector of selectors) {
+                const element = document.querySelector(selector);
+                if (element) {
+                    let name = element.innerText.trim();
+                    name = name.replace(/@[a-zA-Z0-9_.]+/, '').trim();
+                    name = name.replace(/•.*$/, '').trim();
+                    if (name && name.length > 0 && name.length < 100) {
+                        return name;
+                    }
+                }
+            }
+            return null;
+        }).catch(() => null);
+        
+        // Get stats using multiple selectors
+        const stats = await page.evaluate(() => {
+            const result = { followers: null, following: null, posts: null };
+            
+            // Try multiple selector strategies
+            const statSelectors = [
+                'a[href*="/followers/"] span',
+                'a[href*="/following/"] span',
+                'span:has-text("posts")',
+                'span:has-text("followers")',
+                'span:has-text("following")'
+            ];
+            
+            // Look for numbers near text indicators
+            const bodyText = document.body.innerText;
+            
+            // Follower patterns
+            const followerPatterns = [
+                /(\d{1,3}(?:,\d{3})*(?:\.\d+)?[KMB]?)\s*followers/gi,
+                /followers[\s\n]*(\d{1,3}(?:,\d{3})*(?:\.\d+)?[KMB]?)/gi
+            ];
+            
+            for (const pattern of followerPatterns) {
+                const match = bodyText.match(pattern);
+                if (match) {
+                    result.followers = match[1] || match[0].match(/(\d{1,3}(?:,\d{3})*(?:\.\d+)?[KMB]?)/)?.[1];
+                    break;
+                }
+            }
+            
+            // Following patterns
+            const followingPatterns = [
+                /(\d{1,3}(?:,\d{3})*(?:\.\d+)?[KMB]?)\s*following/gi,
+                /following[\s\n]*(\d{1,3}(?:,\d{3})*(?:\.\d+)?[KMB]?)/gi
+            ];
+            
+            for (const pattern of followingPatterns) {
+                const match = bodyText.match(pattern);
+                if (match) {
+                    result.following = match[1] || match[0].match(/(\d{1,3}(?:,\d{3})*(?:\.\d+)?[KMB]?)/)?.[1];
+                    break;
+                }
+            }
+            
+            // Posts patterns
+            const postsPatterns = [
+                /(\d{1,3}(?:,\d{3})*(?:\.\d+)?[KMB]?)\s*posts/gi,
+                /posts[\s\n]*(\d{1,3}(?:,\d{3})*(?:\.\d+)?[KMB]?)/gi
+            ];
+            
+            for (const pattern of postsPatterns) {
+                const match = bodyText.match(pattern);
+                if (match) {
+                    result.posts = match[1] || match[0].match(/(\d{1,3}(?:,\d{3})*(?:\.\d+)?[KMB]?)/)?.[1];
+                    break;
+                }
+            }
+            
+            return result;
+        }).catch(() => ({ followers: null, following: null, posts: null }));
+        
+        data.followers = parseInstagramCount(stats.followers);
+        data.following = parseInstagramCount(stats.following);
+        data.postsCount = parseInstagramCount(stats.posts);
+        
+        // Get profile image
+        data.profileImage = await page.evaluate(() => {
+            const imgSelectors = [
+                'img[data-testid="user-avatar"]',
+                'header img',
+                'img[alt*="profile picture"]',
+                'canvas + img',
+                'img[src*="profile"]'
+            ];
+            
+            for (const selector of imgSelectors) {
+                const img = document.querySelector(selector);
+                if (img && img.src && !img.src.includes('data:')) {
+                    return img.src;
+                }
+            }
+            return null;
+        }).catch(() => null);
+        
+        // Check verification
+        data.isVerified = await page.evaluate(() => {
+            const verificationSelectors = [
+                'svg[aria-label*="Verified" i]',
+                'svg[aria-label*="verified" i]',
+                '[data-testid="verified-badge"]',
+                'span[title*="Verified" i]'
+            ];
+            
+            return verificationSelectors.some(selector => document.querySelector(selector));
+        }).catch(() => false);
+        
+    } catch (error) {
+        log.warning(`⚠️ Error extracting from page elements: ${error.message}`);
+    }
+    
+    return data;
+}
+
+// Extract bio using browser-specific methods
+async function extractBioFromBrowser(page) {
+    log.info('🔍 Browser-specific bio extraction...');
+    
+    try {
+        const bio = await page.evaluate(() => {
+            // Try multiple bio selectors
+            const bioSelectors = [
+                '[data-testid="bio"]',
+                'header div[data-testid="bio"]',
+                'span[dir="auto"]',
+                'div[data-testid="user-bio"]',
+                'article div span',
+                'main div span[dir="auto"]'
+            ];
+            
+            for (const selector of bioSelectors) {
+                const elements = document.querySelectorAll(selector);
+                for (const element of elements) {
+                    const text = element.innerText.trim();
+                    if (text && 
+                        text.length > 10 && 
+                        text.length < 500 && 
+                        !text.includes('followers') && 
+                        !text.includes('following') &&
+                        !text.includes('posts') &&
+                        !text.includes('Sign up') &&
+                        !text.includes('Log in')) {
+                        return text;
+                    }
+                }
+            }
+            
+            // Try to find bio in any span with reasonable length
+            const allSpans = document.querySelectorAll('span');
+            for (const span of allSpans) {
+                const text = span.innerText.trim();
+                if (text && 
+                    text.length > 15 && 
+                    text.length < 400 &&
+                    (text.includes('•') || text.includes('|') || text.includes('📧') || 
+                     text.includes('👆') || text.includes('👇') || text.includes('DM') ||
+                     text.toLowerCase().includes('helping') || text.toLowerCase().includes('creator') ||
+                     text.toLowerCase().includes('founder') || text.toLowerCase().includes('ceo'))) {
+                    return text;
+                }
+            }
+            
+            return null;
+        });
+        
+        if (bio) {
+            log.info(`📝 Found bio via browser: ${bio.substring(0, 100)}...`);
+            return bio;
+        }
+        
+    } catch (error) {
+        log.warning(`⚠️ Browser bio extraction error: ${error.message}`);
+    }
+    
+    return null;
+}
+
+// Extract website using browser-specific methods  
+async function extractWebsiteFromBrowser(page) {
+    log.info('🔗 Browser-specific website extraction...');
+    
+    try {
+        const website = await page.evaluate(() => {
+            // Look for external links
+            const linkSelectors = [
+                'a[href*="linktr.ee"]',
+                'a[href*="bio.link"]',
+                'a[href*="linkin.bio"]',
+                'a[href*="beacons.ai"]',
+                'a[href^="http"]:not([href*="instagram.com"]):not([href*="facebook.com"])',
+                '[data-testid="bio"] a',
+                'header a[href^="http"]'
+            ];
+            
+            for (const selector of linkSelectors) {
+                const link = document.querySelector(selector);
+                if (link && link.href && !link.href.includes('instagram.com')) {
+                    return link.href;
+                }
+            }
+            
+            return null;
+        });
+        
+        if (website) {
+            log.info(`🔗 Found website via browser: ${website}`);
+            return website;
+        }
+        
+    } catch (error) {
+        log.warning(`⚠️ Browser website extraction error: ${error.message}`);
+    }
+    
+    return null;
+}
+
+// Extract recent posts using browser
+async function extractRecentPostsFromBrowser(page, maxPosts) {
+    try {
+        const posts = await page.evaluate((max) => {
+            const posts = [];
+            const postLinks = document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]');
+            
+            for (let i = 0; i < Math.min(postLinks.length, max); i++) {
+                const link = postLinks[i];
+                const img = link.querySelector('img');
+                
+                if (link.href && img) {
+                    posts.push({
+                        url: link.href,
+                        imageUrl: img.src,
+                        altText: img.alt || ''
+                    });
+                }
+            }
+            
+            return posts;
+        }, maxPosts);
+        
+        return posts;
+    } catch (error) {
+        log.warning(`⚠️ Error extracting posts: ${error.message}`);
+        return [];
+    }
+}
+
+// Parse Instagram count format (K, M, B)
+function parseInstagramCount(countStr) {
+    if (!countStr) return null;
+    
+    const cleanStr = countStr.toString().replace(/[,\s]/g, '').toLowerCase();
+    const match = cleanStr.match(/^([\d.]+)([kmb]?)$/);
+    
+    if (!match) return parseInt(cleanStr) || null;
+    
+    const [, numberStr, multiplier] = match;
+    const number = parseFloat(numberStr);
+    
+    switch (multiplier) {
+        case 'k': return Math.round(number * 1000);
+        case 'm': return Math.round(number * 1000000);
+        case 'b': return Math.round(number * 1000000000);
+        default: return Math.round(number);
+    }
+}
+
+// Process all profiles sequentially
 async function processAllProfiles() {
     const results = [];
     
@@ -282,21 +615,21 @@ async function processAllProfiles() {
             normalizedUrl = 'https://' + normalizedUrl;
         }
         
-        log.info(`\n🚀 Starting profile ${i + 1}/${profileUrls.length}: ${normalizedUrl}`);
+        log.info(`\n🚀 Starting browser profile ${i + 1}/${profileUrls.length}: ${normalizedUrl}`);
         
         try {
-            await processProfileWithDedicatedProxy(normalizedUrl, i);
+            await processProfileWithBrowser(normalizedUrl, i);
             results.push({ url: normalizedUrl, status: 'success' });
             
-            // Wait between profiles to avoid rate limiting
+            // Wait between profiles
             if (i < profileUrls.length - 1) {
-                const waitTime = Math.random() * 10000 + 10000; // 10-20 seconds
+                const waitTime = Math.random() * 15000 + 15000; // 15-30 seconds
                 log.info(`⏳ Waiting ${Math.round(waitTime/1000)}s before next profile...`);
                 await new Promise(resolve => setTimeout(resolve, waitTime));
             }
             
         } catch (error) {
-            log.error(`❌ Profile ${normalizedUrl} failed completely: ${error.message}`);
+            log.error(`❌ Profile ${normalizedUrl} failed: ${error.message}`);
             results.push({ url: normalizedUrl, status: 'failed', error: error.message });
         }
     }
@@ -304,465 +637,15 @@ async function processAllProfiles() {
     return results;
 }
 
-// [Keep all the existing extraction functions unchanged]
-function extractProfileData($, url, bodyHtml) {
-    const data = {
-        username: null,
-        fullName: null,
-        bio: null,
-        profileImage: null,
-        followers: null,
-        following: null,
-        postsCount: null,
-        website: null,
-        isVerified: false
-    };
-    
-    // Strategy 0: Extract from window._sharedData JSON (Most Reliable)
-    const sharedData = parseInstagramSharedData(bodyHtml);
-    if (sharedData && sharedData.entry_data && sharedData.entry_data.ProfilePage) {
-        const profilePage = sharedData.entry_data.ProfilePage[0];
-        if (profilePage && profilePage.graphql && profilePage.graphql.user) {
-            const user = profilePage.graphql.user;
-
-            data.username = user.username || data.username;
-            data.fullName = user.full_name || data.fullName;
-            data.bio = user.biography || data.bio;
-            data.profileImage = user.profile_pic_url_hd || user.profile_pic_url || data.profileImage;
-            data.isVerified = user.is_verified || data.isVerified;
-            data.website = user.external_url || data.website;
-
-            if (user.edge_followed_by && user.edge_followed_by.count !== undefined) {
-                data.followers = user.edge_followed_by.count;
-            }
-            if (user.edge_follow && user.edge_follow.count !== undefined) {
-                data.following = user.edge_follow.count;
-            }
-            if (user.edge_owner_to_timeline_media && user.edge_owner_to_timeline_media.count !== undefined) {
-                data.postsCount = user.edge_owner_to_timeline_media.count;
-            }
-            log.info('✨ Successfully extracted data from window._sharedData.');
-        }
-    }
-    
-    // [Rest of the extraction strategies remain the same...]
-    // Strategy 1: JSON-LD structured data
-    const scripts = $('script[type="application/ld+json"]');
-    let jsonData = null;
-    
-    scripts.each((i, script) => {
-        try {
-            const content = $(script).html();
-            if (content && content.includes('"@type":"Person"')) {
-                jsonData = JSON.parse(content);
-                return false;
-            }
-        } catch (e) {
-            // Continue if JSON parsing fails
-        }
-    });
-    
-    if (jsonData) {
-        data.username = data.username || jsonData.alternateName || jsonData.name;
-        data.fullName = data.fullName || jsonData.name;
-        data.bio = data.bio || jsonData.description;
-        data.profileImage = data.profileImage || jsonData.image;
-        data.website = data.website || (jsonData.url !== url ? jsonData.url : null);
-        
-        if (jsonData.interactionStatistic) {
-            jsonData.interactionStatistic.forEach(stat => {
-                if (stat.interactionType === 'https://schema.org/FollowAction') {
-                    data.followers = data.followers || parseInt(stat.userInteractionCount) || null;
-                }
-            });
-        }
-    }
-    
-    // Strategy 2: Meta tags
-    const ogTitle = $('meta[property="og:title"]').attr('content');
-    const ogDescription = $('meta[property="og:description"]').attr('content');
-    const ogImage = $('meta[property="og:image"]').attr('content');
-    
-    if (!data.username && ogTitle) {
-        const usernamePatterns = [
-            /\(@([^)]+)\)/,
-            /^([^(•]+)/,
-        ];
-        
-        for (const pattern of usernamePatterns) {
-            const match = ogTitle.match(pattern);
-            if (match) {
-                data.username = match[1].trim().replace('@', '');
-                break;
-            }
-        }
-    }
-    
-    if (!data.username) {
-        const urlParts = url.split('/').filter(Boolean);
-        data.username = urlParts[urlParts.length - 1];
-    }
-    
-    if (!data.fullName && ogTitle) {
-        let cleanName = ogTitle;
-        cleanName = cleanName.replace(/\s*•.*$/, '');
-        cleanName = cleanName.replace(/\s*\(@[^)]+\)/, '');
-        cleanName = cleanName.replace(/\s*Instagram photos and videos.*$/, '');
-        data.fullName = cleanName.trim() || null;
-    }
-    
-    if (!data.profileImage && ogImage) {
-        data.profileImage = ogImage;
-    }
-    
-    // Strategy 3: Stats from meta description
-    if (ogDescription) {
-        const patterns = [
-            /(\d+(?:,\d+)*[KMB]?)\s*Followers?,\s*(\d+(?:,\d+)*[KMB]?)\s*Following,\s*(\d+(?:,\d+)*[KMB]?)\s*Posts?\s*-\s*(.+)/i,
-            /(\d+(?:,\d+)*[KMB]?)\s*followers?,\s*(\d+(?:,\d+)*[KMB]?)\s*following,\s*(\d+(?:,\d+)*[KMB]?)\s*posts?/i,
-        ];
-        
-        for (const pattern of patterns) {
-            const match = ogDescription.match(pattern);
-            if (match && match.length >= 4 && match[1] && match[2] && match[3]) {
-                data.followers = data.followers || parseInstagramCount(match[1]);
-                data.following = data.following || parseInstagramCount(match[2]);
-                data.postsCount = data.postsCount || parseInstagramCount(match[3]);
-                break;
-            }
-        }
-    }
-    
-    // Strategy 4: Body text patterns
-    const bodyText = $('body').text();
-    if (data.followers === null || data.following === null || data.postsCount === null) {
-        if (data.followers === null) {
-            const followerPatterns = [
-                /(\d+(?:[,\.]\d+)*[KMB]?)\s*followers?/gi,
-                /followers?\s*(\d+(?:[,\.]\d+)*[KMB]?)/gi
-            ];
-            
-            for (const pattern of followerPatterns) {
-                const matches = [...bodyText.matchAll(pattern)];
-                if (matches.length > 0) {
-                    data.followers = parseInstagramCount(matches[0][1]);
-                    break;
-                }
-            }
-        }
-        
-        if (data.following === null) {
-            const followingPatterns = [
-                /(\d+(?:[,\.]\d+)*[KMB]?)\s*following/gi,
-                /following\s*(\d+(?:[,\.]\d+)*[KMB]?)/gi
-            ];
-            
-            for (const pattern of followingPatterns) {
-                const matches = [...bodyText.matchAll(pattern)];
-                if (matches.length > 0) {
-                    data.following = parseInstagramCount(matches[0][1]);
-                    break;
-                }
-            }
-        }
-        
-        if (data.postsCount === null) {
-            const postsPatterns = [
-                /(\d+(?:[,\.]\d+)*[KMB]?)\s*posts?/gi,
-                /posts?\s*(\d+(?:[,\.]\d+)*[KMB]?)/gi
-            ];
-            
-            for (const pattern of postsPatterns) {
-                const matches = [...bodyText.matchAll(pattern)];
-                if (matches.length > 0) {
-                    data.postsCount = parseInstagramCount(matches[0][1]);
-                    break;
-                }
-            }
-        }
-    }
-    
-    data.followers = data.followers === 0 ? null : data.followers;
-    data.following = data.following === 0 ? null : data.following;
-    data.postsCount = data.postsCount === 0 ? null : data.postsCount;
-
-    return data;
-}
-
-function extractBioFromAnywhere($, bodyHtml) {
-    log.info('🔍 Aggressive bio extraction (fallback) starting...');
-    
-    let foundBio = null;
-    
-    // Method 1: Look for ANY JSON-like structure containing biography
-    $('script').each((i, script) => {
-        if (foundBio) return false;
-        const content = $(script).html();
-        if (content) {
-            // Try multiple biography patterns
-            const bioPatterns = [
-                /"biography":\s*"((?:[^"\\]|\\.)*)"/g,  // Standard biography field
-                /"bio":\s*"((?:[^"\\]|\\.)*)"/g,        // Sometimes shortened to 'bio'
-                /"description":\s*"((?:[^"\\]|\\.)*)"/g, // Alternative field name
-                /"about":\s*"((?:[^"\\]|\\.)*)"/g       // Another alternative
-            ];
-            
-            for (const pattern of bioPatterns) {
-                const matches = [...content.matchAll(pattern)];
-                for (const match of matches) {
-                    if (match[1]) {
-                        let bioText = match[1]
-                            .replace(/\\n/g, '\n')
-                            .replace(/\\"/g, '"')
-                            .replace(/\\r/g, '\r')
-                            .replace(/\\t/g, '\t')
-                            .replace(/\\\\/g, '\\');
-                        
-                        if (bioText && bioText.length > 3 && bioText.length < 1000) {
-                            log.info(`📝 Found bio in script (pattern ${pattern.source}): ${bioText}`);
-                            foundBio = bioText;
-                            return false;
-                        }
-                    }
-                }
-            }
-        }
-    });
-    
-    if (foundBio) return foundBio;
-    
-    // Method 2: Look for meta description patterns that might contain bio
-    const metaDescription = $('meta[property="og:description"]').attr('content') || 
-                           $('meta[name="description"]').attr('content');
-    
-    if (metaDescription) {
-        // Remove follower/following stats and extract potential bio
-        let cleanMeta = metaDescription;
-        cleanMeta = cleanMeta.replace(/^\d+[KMB]?\s*Followers?,\s*\d+[KMB]?\s*Following,\s*\d+[KMB]?\s*Posts?\s*-\s*/, '');
-        cleanMeta = cleanMeta.replace(/See Instagram photos and videos from.*$/, '');
-        cleanMeta = cleanMeta.trim();
-        
-        if (cleanMeta && cleanMeta.length > 10 && cleanMeta.length < 500) {
-            log.info(`📝 Extracted bio from meta description: ${cleanMeta}`);
-            return cleanMeta;
-        }
-    }
-    
-    // Method 3: Enhanced keyword search with better patterns
-    const bioKeywords = [
-        'Digital creator', 'Creator', 'Entrepreneur', 'Founder', 'CEO', 'Coach', 
-        'Artist', 'Automation', 'Expert', 'Consultant', 'Specialist', 'Developer',
-        'Designer', 'Photographer', 'Influencer', 'Content creator', 'Business owner',
-        'Marketing', 'Growth', 'Strategy', 'AI', 'Tech', 'Software'
-    ];
-    
-    const bodyText = $('body').text();
-    
-    for (const keyword of bioKeywords) {
-        if (bodyText.toLowerCase().includes(keyword.toLowerCase())) {
-            log.info(`🎯 Found keyword "${keyword}" in body (fallback)`);
-            
-            // Try to extract a sentence or phrase containing the keyword
-            const patterns = [
-                new RegExp(`([^.!?]*${keyword}[^.!?]*[.!?])`, 'i'),  // Full sentence
-                new RegExp(`([^\\n]*${keyword}[^\\n]{10,100})`, 'i'), // Line containing keyword
-                new RegExp(`(${keyword}[^\\n]{5,150})`, 'i')          // Keyword + following text
-            ];
-            
-            for (const pattern of patterns) {
-                const match = bodyText.match(pattern);
-                if (match && match[1]) {
-                    let bio = match[1].trim();
-                    bio = bio.replace(/\s+/g, ' ');
-                    // Filter out common Instagram UI text
-                    if (!bio.includes('photos and videos') && 
-                        !bio.includes('Sign up') && 
-                        !bio.includes('Log in') &&
-                        bio.length > 15 && bio.length < 400) {
-                        log.info(`📝 Extracted bio around keyword (pattern ${pattern.source}): ${bio}`);
-                        return bio;
-                    }
-                }
-            }
-        }
-    }
-    
-    // Method 4: Look for any text that looks like a bio in common Instagram selectors
-    const bioSelectors = [
-        'span[dir="auto"]',  // Common Instagram text container
-        'div[data-testid="bio"]',
-        'article span',
-        'main span',
-        '.xdj266r',  // Instagram class (may change)
-        '.x1lliihq'   // Another common Instagram class
-    ];
-    
-    for (const selector of bioSelectors) {
-        const elements = $(selector);
-        elements.each((i, element) => {
-            if (foundBio) return false;
-            
-            const text = $(element).text().trim();
-            if (text && text.length > 15 && text.length < 400) {
-                // Check if it looks like a bio (contains common bio indicators)
-                const bioIndicators = ['•', '|', '📧', '📩', '🔗', '👆', '👇', '⬇️', '⬆️', 'DM', 'Email', 'Contact'];
-                const hasBioIndicator = bioIndicators.some(indicator => text.includes(indicator));
-                
-                // Or contains descriptive words
-                const descriptiveWords = ['helping', 'passionate', 'love', 'creating', 'building', 'teaching', 'sharing'];
-                const hasDescriptiveWord = descriptiveWords.some(word => text.toLowerCase().includes(word));
-                
-                if (hasBioIndicator || hasDescriptiveWord) {
-                    log.info(`📝 Found potential bio in selector ${selector}: ${text}`);
-                    foundBio = text;
-                    return false;
-                }
-            }
-        });
-        
-        if (foundBio) break;
-    }
-    
-    if (foundBio) return foundBio;
-    
-    log.info('❌ No bio found with aggressive extraction (fallback)');
-    return null;
-}
-
-function extractWebsiteFromAnywhere($, bodyHtml) {
-    log.info('🔗 Aggressive website extraction (fallback) starting...');
-    
-    let foundWebsite = null;
-    
-    $('script').each((i, script) => {
-        if (foundWebsite) return false;
-        
-        const content = $(script).html();
-        if (content) {
-            const urlMatches = content.match(/"external_url":\s*"([^"]+)"/g);
-            if (urlMatches) {
-                for (const match of urlMatches) {
-                    const url = match.match(/"external_url":\s*"([^"]+)"/)[1];
-                    if (url && !url.includes('instagram.com')) {
-                        log.info(`🔗 Found external_url in script (fallback): ${url}`);
-                        foundWebsite = url;
-                        return false;
-                    }
-                }
-            }
-            
-            const bioLinkMatches = content.match(/(https?:\/\/(?:www\.)?(?:linktr\.ee|bio\.link|linkin\.bio|beacons\.ai|bit\.ly|tinyurl\.com)\/[^"'\s]+)/gi);
-            if (bioLinkMatches) {
-                const link = bioLinkMatches[0];
-                log.info(`🔗 Found bio link in script (fallback): ${link}`);
-                foundWebsite = link;
-                return false;
-            }
-        }
-    });
-    
-    if (foundWebsite) return foundWebsite;
-    
-    const urlPatterns = [
-        /(https?:\/\/(?:www\.)?(?:linktr\.ee|bio\.link|linkin\.bio|beacons\.ai|bit\.ly|tinyurl\.com)\/[\w\.-]+)/gi,
-        /(https?:\/\/(?:www\.)?[\w\.-]+\.[\w]{2,4}\/[^\s"']+)/gi
-    ];
-    
-    const fullHtml = bodyHtml || $('body').html();
-    
-    for (const pattern of urlPatterns) {
-        const matches = [...fullHtml.matchAll(pattern)];
-        if (matches.length > 0) {
-            const foundUrl = matches[0][1];
-            if (!foundUrl.includes('instagram.com') && !foundUrl.includes('facebook.com') && !foundUrl.includes('twitter.com')) {
-                log.info(`🔗 Found URL via pattern (fallback): ${foundUrl}`);
-                return foundUrl;
-            }
-        }
-    }
-    
-    log.info('❌ No website found with aggressive extraction (fallback)');
-    return null;
-}
-
-function detectVerification($, bodyHtml) {
-    log.info('✅ Checking verification status (fallback)...');
-    
-    const fullHtml = (bodyHtml || $('body').html()).toLowerCase();
-    
-    const verificationSelectors = [
-        'svg[aria-label*="verified" i]',
-        'img[src*="verified_badge" i]',
-        'span[aria-label*="verified" i]',
-        'span[title*="verified" i]',
-        'div[role="img"][aria-label*="verified" i]',
-        '._ab6l',
-        '[data-testid="verified_badge"]'
-    ];
-    
-    for (const selector of verificationSelectors) {
-        if ($(selector).length > 0) {
-            log.info(`✅ Found verification via selector (fallback): ${selector}`);
-            return true;
-        }
-    }
-    
-    if ($('h1').text().toLowerCase().includes('verified') || $('h2').text().toLowerCase().includes('verified')) {
-        log.info('✅ Found "verified" in a heading (fallback)');
-        return true;
-    }
-    
-    log.info('❌ No verification indicators found (fallback)');
-    return false;
-}
-
-function extractRecentPosts($, maxPosts) {
-    const posts = [];
-    
-    $('a[href*="/p/"], a[href*="/reel/"]').each((i, link) => {
-        if (posts.length >= maxPosts) return false;
-        
-        const href = $(link).attr('href');
-        const img = $(link).find('img').first();
-        
-        if (href && img.length) {
-            posts.push({
-                url: href.startsWith('http') ? href : `https://www.instagram.com${href}`,
-                imageUrl: img.attr('src'),
-                altText: img.attr('alt') || ''
-            });
-        }
-    });
-    
-    return posts;
-}
-
-function parseInstagramCount(countStr) {
-    if (!countStr) return null;
-    
-    const cleanStr = countStr.toString().replace(/[,\s]/g, '').toLowerCase();
-    const match = cleanStr.match(/^([\d.]+)([kmb]?)$/);
-    
-    if (!match) return parseInt(cleanStr) || null;
-    
-    const [, numberStr, multiplier] = match;
-    const number = parseFloat(numberStr);
-    
-    switch (multiplier) {
-        case 'k': return Math.round(number * 1000);
-        case 'm': return Math.round(number * 1000000);
-        case 'b': return Math.round(number * 1000000000);
-        default: return Math.round(number);
-    }
-}
-
 // Main execution
-log.info(`🚀 Starting Instagram scraper with per-profile proxy rotation for ${profileUrls.length} profile(s)`);
+log.info(`🚀 Starting BROWSER-BASED Instagram scraper for ${profileUrls.length} profile(s)`);
 log.info(`🔄 Per-profile proxy rotation: ${usePerProfileProxy ? 'ENABLED' : 'DISABLED'}`);
+log.info(`⏱️  Content wait time: ${waitForContent}ms`);
+log.info(`🚫 Resource blocking: ${blockResources ? 'ENABLED' : 'DISABLED'}`);
 
 const results = await processAllProfiles();
 
-log.info('\n📊 FINAL RESULTS:');
+log.info('\n📊 FINAL BROWSER SCRAPING RESULTS:');
 results.forEach((result, index) => {
     log.info(`${index + 1}. ${result.url}: ${result.status.toUpperCase()}`);
     if (result.error) {
@@ -770,5 +653,5 @@ results.forEach((result, index) => {
     }
 });
 
-log.info('✅ Instagram scraping completed!');
+log.info('✅ Browser-based Instagram scraping completed!');
 await Actor.exit();
