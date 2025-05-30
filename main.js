@@ -6,34 +6,42 @@ function extractBioFromAnywhere($, bodyHtml) {
     log.info('🔍 Aggressive bio extraction starting...');
     
     // Method 1: Look in ALL script tags for JSON data
+    let foundBio = null;
+    
     $('script').each((i, script) => {
+        if (foundBio) return false; // Break if already found
+        
         const content = $(script).html();
         if (content) {
             // Look for biography in JSON
             const bioMatches = content.match(/"biography":\s*"([^"]+)"/g);
             if (bioMatches) {
-                bioMatches.forEach(match => {
+                for (const match of bioMatches) {
                     const bioText = match.match(/"biography":\s*"([^"]+)"/)[1];
                     if (bioText && bioText.length > 3) {
                         log.info(`📝 Found bio in script: ${bioText}`);
-                        return bioText;
+                        foundBio = bioText;
+                        return false; // Break
                     }
-                });
+                }
             }
             
             // Look for any description fields
             const descMatches = content.match(/"description":\s*"([^"]+)"/g);
             if (descMatches) {
-                descMatches.forEach(match => {
+                for (const match of descMatches) {
                     const descText = match.match(/"description":\s*"([^"]+)"/)[1];
                     if (descText && descText.length > 10 && !descText.includes('See Instagram photos')) {
                         log.info(`📝 Found description in script: ${descText}`);
-                        return descText;
+                        foundBio = descText;
+                        return false; // Break
                     }
-                });
+                }
             }
         }
     });
+    
+    if (foundBio) return foundBio;
     
     // Method 2: Look in raw HTML for common bio patterns
     const bioKeywords = ['Digital creator', 'Creator', 'Entrepreneur', 'Founder', 'CEO', 'Coach', 'Artist', 'Automation', 'Expert'];
@@ -86,19 +94,24 @@ function extractWebsiteFromAnywhere($, bodyHtml) {
     log.info('🔗 Aggressive website extraction starting...');
     
     // Method 1: Look in ALL script tags for external URLs
+    let foundWebsite = null;
+    
     $('script').each((i, script) => {
+        if (foundWebsite) return false; // Break if already found
+        
         const content = $(script).html();
         if (content) {
             // Look for external_url in JSON
             const urlMatches = content.match(/"external_url":\s*"([^"]+)"/g);
             if (urlMatches) {
-                urlMatches.forEach(match => {
+                for (const match of urlMatches) {
                     const url = match.match(/"external_url":\s*"([^"]+)"/)[1];
                     if (url && !url.includes('instagram.com')) {
                         log.info(`🔗 Found external_url in script: ${url}`);
-                        return url;
+                        foundWebsite = url;
+                        return false; // Break
                     }
-                });
+                }
             }
             
             // Look for any linktr.ee or common bio links
@@ -106,10 +119,13 @@ function extractWebsiteFromAnywhere($, bodyHtml) {
             if (bioLinkMatches) {
                 const link = bioLinkMatches[0];
                 log.info(`🔗 Found bio link in script: ${link}`);
-                return link.startsWith('http') ? link : `https://${link}`;
+                foundWebsite = link.startsWith('http') ? link : `https://${link}`;
+                return false; // Break
             }
         }
     });
+    
+    if (foundWebsite) return foundWebsite;
     
     // Method 2: Look in raw HTML for URL patterns
     const urlPatterns = [
@@ -188,13 +204,17 @@ function detectVerification($, bodyHtml) {
     }
     
     // Check for verification in script tags
+    let isVerified = false;
     $('script').each((i, script) => {
         const content = $(script).html();
         if (content && content.toLowerCase().includes('verified')) {
             log.info('✅ Found verification in script tag');
-            return true;
+            isVerified = true;
+            return false; // Break
         }
     });
+    
+    if (isVerified) return true;
     
     // Check for SVG or icon elements that might indicate verification
     const verificationSelectors = [
@@ -213,7 +233,8 @@ function detectVerification($, bodyHtml) {
     }
     
     log.info('❌ No verification indicators found');
-    return false; from 'apify';
+    return false;
+} from 'apify';
 import { CheerioCrawler, log } from 'crawlee';
 
 // Initialize the Actor
