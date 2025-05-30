@@ -82,7 +82,9 @@ const crawler = new CheerioCrawler({
         try {
             // Check if we got the actual Instagram page content
             const pageTitle = $('title').text();
+            const metaDesc = $('meta[property="og:description"]').attr('content');
             log.info(`Page title: ${pageTitle}`);
+            log.info(`Meta description: ${metaDesc}`);
             
             // Check for login redirect or blocks
             if (pageTitle.includes('Login') || body.includes('login_and_signup_page')) {
@@ -199,22 +201,44 @@ function extractProfileData($, url) {
         const metaDesc = $('meta[property="og:description"]').attr('content') || 
                         $('meta[name="description"]').attr('content');
         if (metaDesc) {
-            data.bio = metaDesc;
-            
             // Parse stats from meta description format: "X Followers, Y Following, Z Posts - Bio text"
             const statsMatch = metaDesc.match(/(\d+(?:,\d+)*)\s*Followers?,\s*(\d+(?:,\d+)*)\s*Following,\s*(\d+(?:,\d+)*)\s*Posts?\s*-\s*(.+)/i);
             if (statsMatch) {
                 data.followers = parseInstagramCount(statsMatch[1]);
                 data.following = parseInstagramCount(statsMatch[2]);
                 data.postsCount = parseInstagramCount(statsMatch[3]);
-                data.bio = statsMatch[4].trim();
                 
-                // Extract username and full name from bio if needed
-                if (!data.fullName && statsMatch[4]) {
-                    const bioText = statsMatch[4];
-                    const fromMatch = bioText.match(/from (.+?) \(/);
-                    if (fromMatch) {
-                        data.fullName = fromMatch[1].trim();
+                // Extract bio from the part after the dash
+                let bioText = statsMatch[4].trim();
+                
+                // Check if it's just the default Instagram text format
+                const defaultTextMatch = bioText.match(/^See Instagram photos and videos from (.+?) \((@[^)]+)\)(.*)$/);
+                if (defaultTextMatch) {
+                    data.fullName = defaultTextMatch[1].trim();
+                    if (!data.username) {
+                        data.username = defaultTextMatch[2].replace('@', '');
+                    }
+                    // Check if there's actual bio content after the default text
+                    const actualBio = defaultTextMatch[3].trim();
+                    data.bio = actualBio.length > 0 ? actualBio : null;
+                } else {
+                    // If it doesn't match the standard format, it might be a custom bio
+                    data.bio = bioText.length > 0 ? bioText : null;
+                }
+            } else {
+                // If no stats pattern found, check if it's a bio or default text
+                if (!metaDesc.includes('See Instagram photos and videos from')) {
+                    data.bio = metaDesc;
+                } else {
+                    // Extract info from the default text even without stats
+                    const defaultMatch = metaDesc.match(/See Instagram photos and videos from (.+?) \((@[^)]+)\)(.*)$/);
+                    if (defaultMatch) {
+                        data.fullName = defaultMatch[1].trim();
+                        if (!data.username) {
+                            data.username = defaultMatch[2].replace('@', '');
+                        }
+                        const actualBio = defaultMatch[3].trim();
+                        data.bio = actualBio.length > 0 ? actualBio : null;
                     }
                 }
             }
@@ -293,16 +317,6 @@ function extractProfileData($, url) {
             data.website = href;
         }
     });
-    
-    // Clean up the data
-    if (data.bio && data.bio.startsWith('See Instagram photos and videos from')) {
-        const bioMatch = data.bio.match(/See Instagram photos and videos from (.+?) \((@[^)]+)\)/);
-        if (bioMatch) {
-            data.fullName = bioMatch[1].trim();
-            data.username = bioMatch[2].replace('@', '');
-            data.bio = null; // This isn't a real bio
-        }
-    }
     
     return data;
 }
