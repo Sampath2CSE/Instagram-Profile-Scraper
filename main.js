@@ -43,21 +43,55 @@ if (!profileUrls || profileUrls.length === 0) {
 const createProxyPool = async (baseProxyConfig, poolSize = 5) => {
     const proxyPool = [];
     
-    // Create different proxy configurations
-    const proxyGroups = ['RESIDENTIAL', 'DATACENTER'];
-    const countries = ['US', 'GB', 'CA', 'AU', 'DE']; // Different countries
+    // Only use RESIDENTIAL proxies (most reliable for Instagram)
+    const proxyGroups = ['RESIDENTIAL']; 
+    const countries = ['US', 'GB', 'CA', 'AU', 'DE', 'FR', 'NL', 'SE', 'IT', 'ES']; // More countries for variety
     
     for (let i = 0; i < poolSize; i++) {
-        const proxyConfig = {
-            ...baseProxyConfig,
-            apifyProxyGroups: [proxyGroups[i % proxyGroups.length]],
-            apifyProxyCountry: countries[i % countries.length]
-        };
-        
-        const proxyConfiguration = await Actor.createProxyConfiguration(proxyConfig);
-        proxyPool.push(proxyConfiguration);
-        
-        log.info(`🌐 Created proxy config ${i + 1}: ${proxyGroups[i % proxyGroups.length]} - ${countries[i % countries.length]}`);
+        try {
+            const proxyConfig = {
+                ...baseProxyConfig,
+                apifyProxyGroups: [proxyGroups[i % proxyGroups.length]],
+                apifyProxyCountry: countries[i % countries.length]
+            };
+            
+            log.info(`🔧 Attempting to create proxy config ${i + 1}: ${proxyGroups[i % proxyGroups.length]} - ${countries[i % countries.length]}`);
+            
+            const proxyConfiguration = await Actor.createProxyConfiguration(proxyConfig);
+            proxyPool.push(proxyConfiguration);
+            
+            log.info(`✅ Created proxy config ${i + 1}: ${proxyGroups[i % proxyGroups.length]} - ${countries[i % countries.length]}`);
+            
+        } catch (error) {
+            log.warning(`⚠️ Failed to create proxy config ${i + 1} (${countries[i % countries.length]}): ${error.message}`);
+            
+            // Fallback: try without country specification
+            try {
+                const fallbackConfig = {
+                    ...baseProxyConfig,
+                    apifyProxyGroups: [proxyGroups[i % proxyGroups.length]]
+                    // No country specified - let Apify choose
+                };
+                
+                log.info(`🔄 Trying fallback proxy config ${i + 1} without country restriction...`);
+                const fallbackProxyConfiguration = await Actor.createProxyConfiguration(fallbackConfig);
+                proxyPool.push(fallbackProxyConfiguration);
+                
+                log.info(`✅ Created fallback proxy config ${i + 1}: ${proxyGroups[i % proxyGroups.length]} - AUTO`);
+                
+            } catch (fallbackError) {
+                log.error(`❌ Failed to create fallback proxy config ${i + 1}: ${fallbackError.message}`);
+                // Continue with next iteration - we'll have fewer proxies but that's OK
+            }
+        }
+    }
+    
+    if (proxyPool.length === 0) {
+        log.warning('⚠️ No proxy configurations created, falling back to single default proxy...');
+        // Create one default proxy configuration
+        const defaultProxy = await Actor.createProxyConfiguration(baseProxyConfig);
+        proxyPool.push(defaultProxy);
+        log.info('✅ Created default proxy configuration');
     }
     
     return proxyPool;
