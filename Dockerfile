@@ -1,5 +1,5 @@
-# Use official Apify base image with Node.js, Chrome, and Playwright
-FROM apify/actor-node-playwright-chrome:20
+# Use official Apify base image with Node.js 
+FROM apify/actor-node:20
 
 # Copy package files first for better Docker layer caching
 COPY package*.json ./
