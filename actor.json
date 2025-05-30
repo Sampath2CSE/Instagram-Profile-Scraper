@@ -1,0 +1,44 @@
+{
+  "actorSpecification": 1,
+  "name": "instagram-profile-scraper",
+  "title": "Instagram Profile Scraper",
+  "description": "Efficiently scrapes Instagram profiles to extract user information including username, full name, bio, follower/following counts, verification status, and optionally recent posts. Uses smart proxy rotation and anti-detection measures.",
+  "version": "1.0.0",
+  "meta": {
+    "templateId": "puppeteer-crawler"
+  },
+  "input": "./INPUT_SCHEMA.json",
+  "dockerfile": "./Dockerfile",
+  "readme": "./README.md",
+  "categories": [
+    "SOCIAL_MEDIA"
+  ],
+  "defaultRunOptions": {
+    "build": "latest",
+    "timeoutSecs": 3600,
+    "memoryMbytes": 1024
+  },
+  "example": {
+    "profileUrls": [
+      {"url": "https://www.instagram.com/natgeo/"},
+      {"url": "https://www.instagram.com/instagram/"}
+    ],
+    "proxy": {
+      "useApifyProxy": true,
+      "apifyProxyGroups": ["RESIDENTIAL"]
+    },
+    "includeRecentPosts": false,
+    "maxPostsToScrape": 12,
+    "maxRetries": 3,
+    "delay": 2000,
+    "outputFormat": [
+      "username",
+      "fullName", 
+      "bio",
+      "followers",
+      "following",
+      "postsCount",
+      "isVerified"
+    ]
+  }
+}

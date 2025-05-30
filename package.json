@@ -1,0 +1,29 @@
+{
+  "name": "instagram-profile-scraper",
+  "version": "1.0.0",
+  "description": "Instagram Profile Scraper for Apify platform",
+  "main": "main.js",
+  "type": "module",
+  "scripts": {
+    "start": "node main.js",
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "apify": "^3.1.0",
+    "crawlee": "^3.5.0",
+    "puppeteer": "^21.0.0"
+  },
+  "devDependencies": {
+    "@apify/eslint-config": "^0.4.0",
+    "eslint": "^8.50.0"
+  },
+  "author": "Your Name",
+  "license": "MIT",
+  "keywords": [
+    "instagram",
+    "scraper", 
+    "apify",
+    "social-media",
+    "data-extraction"
+  ]
+}
