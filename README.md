@@ -1,4 +1,120 @@
-# Instagram Profile Scraper
+# Instagram Profile Scraper - Advanced Anti-Detection Edition
+
+A state-of-the-art Instagram profile scraper built for the Apify platform, incorporating cutting-edge anti-blocking techniques and browser fingerprinting to reliably extract data from Instagram profiles without detection.
+
+## 🛡️ Advanced Anti-Detection Features
+
+### **Browser Fingerprinting & Stealth**
+- **Real Browser Signatures**: Uses authentic browser fingerprints from Chrome, Firefox, and Safari
+- **Dynamic Fingerprinting**: Randomizes screen resolutions, OS details, and browser versions
+- **TLS Fingerprinting**: Mimics real browser TLS handshakes to pass network-level detection
+- **WebDriver Hiding**: Removes automation indicators that Instagram uses to detect bots
+- **Plugin Spoofing**: Simulates realistic browser plugin configurations
+
+### **Human Behavior Simulation**
+- **Mouse Movement Patterns**: Realistic cursor movements and interactions
+- **Scroll Behavior**: Natural scrolling patterns with varied speeds and distances
+- **Timing Randomization**: Human-like delays between actions and requests
+- **Focus Events**: Simulates realistic browser focus and blur events
+- **Viewport Variation**: Randomizes window sizes to avoid pattern detection
+
+### **Advanced Proxy Management**
+- **Session-Based Rotation**: Maintains IP sessions for realistic browsing patterns
+- **Residential Proxy Priority**: Defaults to residential IPs for maximum stealth
+- **Geographic Consistency**: Matches proxy location with realistic user patterns
+- **Health Monitoring**: Automatically detects and rotates burned proxies
+
+### **Intelligent Rate Limiting**
+- **Adaptive Concurrency**: Automatically adjusts request rates based on response patterns
+- **Backoff Strategies**: Implements smart retry logic with exponential backoff
+- **Request Pattern Variation**: Avoids predictable request timing that triggers detection
+
+## 🚀 Enhanced Features
+
+### **Robust Data Extraction**
+- **Multiple Extraction Strategies**: Fallback selectors for maximum reliability
+- **Confidence Scoring**: Provides extraction confidence metrics for data quality assessment
+- **Enhanced Error Handling**: Detailed error reporting with retry analysis
+- **Flexible Output Filtering**: Customizable data fields for optimized output
+
+### **Modern Instagram Compatibility**
+- **2025 Selector Updates**: Compatible with latest Instagram layout changes
+- **Dynamic Content Handling**: Handles JavaScript-rendered content and infinite scroll
+- **Mobile-First Approach**: Optimized for Instagram's mobile-first design patterns
+- **API-like Reliability**: Consistent data structure regardless of Instagram updates
+
+## 📋 Input Configuration
+
+### **Required Fields**
+- **Profile URLs**: Instagram profile URLs to scrape
+
+### **Anti-Detection Settings**
+- **Advanced Fingerprinting**: Enable sophisticated browser fingerprinting (Recommended: ✅)
+- **Session Persistence**: Use session-based IP rotation (Recommended: ✅)
+- **Behavior Randomization**: Simulate human-like interactions (Recommended: ✅)
+- **Rate Limit Respect**: Automatically limit requests to avoid detection (Recommended: ✅)
+
+### **Performance Tuning**
+- **Concurrency Control**: Balance speed vs. stealth (Recommended: 1-2 for Instagram)
+- **Delay Randomization**: Configurable min/max delays for natural timing
+- **Proxy Configuration**: Residential proxy groups for maximum success rates
+
+## 📊 Output Data Structure
+
+```json
+{
+  "username": "example_user",
+  "fullName": "Example User",
+  "bio": "This is an example bio with emojis 🎉",
+  "profileImage": "https://instagram.com/profile_image.jpg",
+  "followers": 1500000,
+  "following": 250,
+  "postsCount": 847,
+  "website": "https://example.com",
+  "isVerified": true,
+  "recentPosts": [
+    {
+      "url": "https://instagram.com/p/post_id/",
+      "imageUrl": "https://instagram.com/post_image.jpg",
+      "altText": "Post description"
+    }
+  ],
+  "profileUrl": "https://www.instagram.com/example_user/",
+  "scrapedAt": "2025-05-30T10:00:00.000Z",
+  "extractionConfidence": 95
+}
+```
+
+## 🛠️ Usage Examples
+
+### **Maximum Stealth Configuration**
+```json
+{
+  "profileUrls": [
+    {"url": "https://www.instagram.com/natgeo/"}
+  ],
+  "proxy": {
+    "useApifyProxy": true,
+    "apifyProxyGroups": ["RESIDENTIAL"]
+  },
+  "useAdvancedFingerprinting": true,
+  "sessionPersistence": true,
+  "respectRateLimit": true,
+  "maxConcurrency": 1,
+  "randomizeUserBehavior": true,
+  "minDelay": 5000,
+  "maxDelay": 10000
+}
+```
+
+### **Balanced Performance Configuration**
+```json
+{
+  "profileUrls": [
+    {"url": "https://www.instagram.com/instagram/"},
+    {"url": "https://www.instagram.com/natgeo/"}
+  ],
+  "proxy# Instagram Profile Scraper
 
 A robust and efficient Instagram profile scraper built for the Apify platform. This Actor extracts comprehensive profile information from Instagram accounts including user details, statistics, and optionally recent posts.
 

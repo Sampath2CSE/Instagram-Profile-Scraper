@@ -54,14 +54,58 @@
       "sectionCaption": "Advanced Settings",
       "sectionDescription": "Fine-tune the scraper's behavior and performance"
     },
-    "delay": {
-      "title": "Delay Between Requests",
+    "minDelay": {
+      "title": "Minimum Delay Between Requests",
       "type": "integer", 
-      "description": "Delay in milliseconds between requests to avoid being detected as a bot",
-      "default": 2000,
+      "description": "Minimum delay in milliseconds between requests (randomized for human-like behavior)",
+      "default": 3000,
       "minimum": 1000,
       "maximum": 10000,
       "unit": "ms"
+    },
+    "maxDelay": {
+      "title": "Maximum Delay Between Requests",
+      "type": "integer", 
+      "description": "Maximum delay in milliseconds between requests (randomized for human-like behavior)",
+      "default": 7000,
+      "minimum": 2000,
+      "maximum": 15000,
+      "unit": "ms"
+    },
+    "useAdvancedFingerprinting": {
+      "title": "Advanced Browser Fingerprinting",
+      "type": "boolean",
+      "description": "Enable advanced browser fingerprinting to mimic real browsers and avoid detection",
+      "default": true,
+      "sectionCaption": "Anti-Detection Features",
+      "sectionDescription": "Advanced settings to avoid bot detection and blocking"
+    },
+    "sessionPersistence": {
+      "title": "Session-Based IP Rotation",
+      "type": "boolean",
+      "description": "Use session-based IP rotation for more human-like proxy behavior",
+      "default": true
+    },
+    "respectRateLimit": {
+      "title": "Respect Rate Limits",
+      "type": "boolean",
+      "description": "Automatically limit concurrency to respect Instagram's rate limits",
+      "default": true
+    },
+    "maxConcurrency": {
+      "title": "Maximum Concurrency",
+      "type": "integer",
+      "description": "Maximum number of concurrent requests (automatically limited if 'Respect Rate Limits' is enabled)",
+      "default": 2,
+      "minimum": 1,
+      "maximum": 5,
+      "unit": "requests"
+    },
+    "randomizeUserBehavior": {
+      "title": "Randomize User Behavior",
+      "type": "boolean",
+      "description": "Simulate human-like behavior with random mouse movements, scrolling, and timing",
+      "default": true
     },
     "outputFormat": {
       "title": "Output Data Fields",
