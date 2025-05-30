@@ -194,13 +194,16 @@ function extractProfileData($, url) {
     const ogDescription = $('meta[property="og:description"]').attr('content');
     const ogImage = $('meta[property="og:image"]').attr('content');
     
+    log.info(`OG Title: ${ogTitle}`);
+    log.info(`OG Description: ${ogDescription}`);
+    
     // Extract username from various sources
     if (!data.username) {
         if (ogTitle) {
             // Try different title formats
             const usernamePatterns = [
                 /\(@([^)]+)\)/, // "Name (@username)"
-                /^([^(]+)/, // Just the name part
+                /^([^(•]+)/, // Just the name part before (•
             ];
             
             for (const pattern of usernamePatterns) {
@@ -219,10 +222,19 @@ function extractProfileData($, url) {
         }
     }
     
-    // Extract full name
+    // Extract full name from title
     if (!data.fullName && ogTitle) {
-        // Remove username part to get full name
-        data.fullName = ogTitle.replace(/\(@[^)]+\)/, '').trim();
+        // Clean patterns to extract just the name
+        let cleanName = ogTitle;
+        
+        // Remove "• Instagram photos and videos" part
+        cleanName = cleanName.replace(/\s*•.*$/, '');
+        // Remove (@username) part  
+        cleanName = cleanName.replace(/\s*\(@[^)]+\)/, '');
+        // Remove "Instagram photos and videos" part
+        cleanName = cleanName.replace(/\s*Instagram photos and videos.*$/, '');
+        
+        data.fullName = cleanName.trim() || null;
     }
     
     // Extract profile image
@@ -230,7 +242,37 @@ function extractProfileData($, url) {
         data.profileImage = ogImage;
     }
     
-    // Strategy 3: Extract stats from meta description
+    // Strategy 3: Extract bio and stats from body text (more reliable than meta description)
+    const bodyText = $('body').text();
+    
+    // Look for bio patterns in the body text
+    if (!data.bio) {
+        // Try to find bio patterns - look for text between name and stats
+        const bioPatterns = [
+            // Pattern: After "Digital creator" or similar professional titles
+            /Digital creator\s*(.+?)(?=\d+\s*posts?|\d+\s*followers?)/i,
+            // Pattern: After the name, before stats
+            new RegExp(`${data.fullName || data.username}\\s*(.+?)(?=\\d+\\s*posts?|\\d+\\s*followers?)`, 'i'),
+            // Pattern: Look for common bio indicators
+            /(?:creator|entrepreneur|founder|ceo|founder|artist)[\s\n]*(.+?)(?=\d+\s*posts?|\d+\s*followers?)/i,
+        ];
+        
+        for (const pattern of bioPatterns) {
+            const match = bodyText.match(pattern);
+            if (match && match[1]) {
+                let bioText = match[1].trim();
+                // Clean up the bio
+                bioText = bioText.replace(/\s*(posts?|followers?|following)\s*/gi, ' ');
+                bioText = bioText.replace(/\s+/g, ' ').trim();
+                if (bioText.length > 5 && !bioText.match(/^\d+$/)) {
+                    data.bio = bioText;
+                    break;
+                }
+            }
+        }
+    }
+    
+    // Strategy 4: Extract stats from meta description first, then body text
     if (ogDescription) {
         // Try multiple patterns for meta description
         const patterns = [
@@ -238,125 +280,107 @@ function extractProfileData($, url) {
             /(\d+(?:,\d+)*[KMB]?)\s*Followers?,\s*(\d+(?:,\d+)*[KMB]?)\s*Following,\s*(\d+(?:,\d+)*[KMB]?)\s*Posts?\s*-\s*(.+)/i,
             // Pattern 2: "X followers, Y following, Z posts"
             /(\d+(?:,\d+)*[KMB]?)\s*followers?,\s*(\d+(?:,\d+)*[KMB]?)\s*following,\s*(\d+(?:,\d+)*[KMB]?)\s*posts?/i,
-            // Pattern 3: Just look for the bio part
-            /See Instagram photos and videos from (.+?)(?:\s*\((@[^)]+)\))?(.*)$/
         ];
         
         let statsExtracted = false;
         
         for (const pattern of patterns) {
             const match = ogDescription.match(pattern);
-            if (match) {
-                if (match.length >= 4 && match[1] && match[2] && match[3]) {
-                    // Stats pattern matched
-                    data.followers = data.followers || parseInstagramCount(match[1]);
-                    data.following = data.following || parseInstagramCount(match[2]);
-                    data.postsCount = data.postsCount || parseInstagramCount(match[3]);
-                    
-                    // Extract bio if available
-                    if (match[4]) {
-                        const bioText = match[4].trim();
-                        if (bioText.startsWith('See Instagram photos and videos from')) {
-                            const bioMatch = bioText.match(/See Instagram photos and videos from (.+?)(?:\s*\((@[^)]+)\))?(.*)$/);
-                            if (bioMatch) {
-                                data.fullName = data.fullName || bioMatch[1].trim();
-                                if (bioMatch[2]) {
-                                    data.username = data.username || bioMatch[2].replace('@', '');
-                                }
-                                data.bio = bioMatch[3] ? bioMatch[3].trim() : null;
-                            }
-                        } else {
-                            data.bio = bioText;
-                        }
-                    }
-                    statsExtracted = true;
+            if (match && match.length >= 4 && match[1] && match[2] && match[3]) {
+                // Stats pattern matched
+                data.followers = data.followers || parseInstagramCount(match[1]);
+                data.following = data.following || parseInstagramCount(match[2]);
+                data.postsCount = data.postsCount || parseInstagramCount(match[3]);
+                statsExtracted = true;
+                break;
+            }
+        }
+    }
+    
+    // Strategy 5: Extract stats from page body text (fallback)
+    if (!data.followers || !data.following || !data.postsCount) {
+        // More aggressive regex patterns for stats
+        if (!data.followers) {
+            const followerPatterns = [
+                /(\d+(?:[,\.]\d+)*[KMB]?)\s*followers?/gi,
+                /followers?\s*(\d+(?:[,\.]\d+)*[KMB]?)/gi
+            ];
+            
+            for (const pattern of followerPatterns) {
+                const matches = [...bodyText.matchAll(pattern)];
+                if (matches.length > 0) {
+                    data.followers = parseInstagramCount(matches[0][1]);
                     break;
                 }
             }
         }
         
-        // If no stats found in meta description, try to extract name and bio
-        if (!statsExtracted && ogDescription) {
-            if (ogDescription.includes('See Instagram photos and videos from')) {
-                const nameMatch = ogDescription.match(/See Instagram photos and videos from (.+?)(?:\s*\((@[^)]+)\))?(.*)$/);
-                if (nameMatch) {
-                    data.fullName = data.fullName || nameMatch[1].trim();
-                    if (nameMatch[2]) {
-                        data.username = data.username || nameMatch[2].replace('@', '');
-                    }
-                    data.bio = nameMatch[3] ? nameMatch[3].trim() : null;
+        if (!data.following) {
+            const followingPatterns = [
+                /(\d+(?:[,\.]\d+)*[KMB]?)\s*following/gi,
+                /following\s*(\d+(?:[,\.]\d+)*[KMB]?)/gi
+            ];
+            
+            for (const pattern of followingPatterns) {
+                const matches = [...bodyText.matchAll(pattern)];
+                if (matches.length > 0) {
+                    data.following = parseInstagramCount(matches[0][1]);
+                    break;
                 }
-            } else {
-                // Might be a custom bio
-                data.bio = data.bio || ogDescription;
             }
         }
-    }
-    
-    // Strategy 4: Extract stats from page body text (fallback)
-    const bodyText = $('body').text();
-    
-    if (!data.followers) {
-        const followerPatterns = [
-            /(\d+(?:,\d+)*[KMB]?)\s*followers?/gi,
-            /followers?\s*(\d+(?:,\d+)*[KMB]?)/gi
-        ];
         
-        for (const pattern of followerPatterns) {
-            const matches = [...bodyText.matchAll(pattern)];
-            if (matches.length > 0) {
-                data.followers = parseInstagramCount(matches[0][1]);
-                break;
+        if (!data.postsCount) {
+            const postsPatterns = [
+                /(\d+(?:[,\.]\d+)*[KMB]?)\s*posts?/gi,
+                /posts?\s*(\d+(?:[,\.]\d+)*[KMB]?)/gi
+            ];
+            
+            for (const pattern of postsPatterns) {
+                const matches = [...bodyText.matchAll(pattern)];
+                if (matches.length > 0) {
+                    data.postsCount = parseInstagramCount(matches[0][1]);
+                    break;
+                }
             }
         }
     }
     
-    if (!data.following) {
-        const followingPatterns = [
-            /(\d+(?:,\d+)*[KMB]?)\s*following/gi,
-            /following\s*(\d+(?:,\d+)*[KMB]?)/gi
-        ];
-        
-        for (const pattern of followingPatterns) {
-            const matches = [...bodyText.matchAll(pattern)];
-            if (matches.length > 0) {
-                data.following = parseInstagramCount(matches[0][1]);
-                break;
-            }
-        }
-    }
-    
-    if (!data.postsCount) {
-        const postsPatterns = [
-            /(\d+(?:,\d+)*[KMB]?)\s*posts?/gi,
-            /posts?\s*(\d+(?:,\d+)*[KMB]?)/gi
-        ];
-        
-        for (const pattern of postsPatterns) {
-            const matches = [...bodyText.matchAll(pattern)];
-            if (matches.length > 0) {
-                data.postsCount = parseInstagramCount(matches[0][1]);
-                break;
-            }
-        }
-    }
-    
-    // Strategy 5: Check for verification
+    // Strategy 6: Check for verification
     data.isVerified = bodyText.toLowerCase().includes('verified') || 
                      $('[title*="verified" i], [alt*="verified" i]').length > 0 ||
                      $('body').html().toLowerCase().includes('verified');
     
-    // Strategy 6: Extract website links
-    $('a[href]').each((i, link) => {
-        const href = $(link).attr('href');
-        if (href && 
-            href.startsWith('http') && 
-            !href.includes('instagram.com') && 
-            !href.includes('facebook.com') &&
-            !data.website) {
-            data.website = href;
+    // Strategy 7: Extract website links (improved)
+    // First try to find linktr.ee or other common bio link services
+    const linkPatterns = [
+        /linktr\.ee\/[\w\.-]+/gi,
+        /bio\.link\/[\w\.-]+/gi,
+        /linkin\.bio\/[\w\.-]+/gi,
+        /beacons\.ai\/[\w\.-]+/gi
+    ];
+    
+    for (const pattern of linkPatterns) {
+        const match = bodyText.match(pattern);
+        if (match) {
+            data.website = match[0].startsWith('http') ? match[0] : `https://${match[0]}`;
+            break;
         }
-    });
+    }
+    
+    // Fallback: look for any external links
+    if (!data.website) {
+        $('a[href]').each((i, link) => {
+            const href = $(link).attr('href');
+            if (href && 
+                href.startsWith('http') && 
+                !href.includes('instagram.com') && 
+                !href.includes('facebook.com') &&
+                !data.website) {
+                data.website = href;
+            }
+        });
+    }
     
     return data;
 }
