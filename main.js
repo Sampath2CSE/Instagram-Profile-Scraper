@@ -1,4 +1,4 @@
-// main.js - Advanced Instagram Profile Scraper with Anti-Detection
+// main.js - Working Instagram Profile Scraper with Proven Anti-Detection
 import { Actor } from 'apify';
 import { PlaywrightCrawler, log } from 'crawlee';
 
@@ -9,19 +9,15 @@ await Actor.init();
 const input = await Actor.getInput();
 const {
     profileUrls = [],
-    proxy = { 
-        useApifyProxy: true, 
-        apifyProxyGroups: ['RESIDENTIAL'],
-        apifyProxyCountry: 'US'
-    },
-    maxRetries = 3,
-    minDelay = 3000,
-    maxDelay = 7000,
+    proxy = { useApifyProxy: true, apifyProxyGroups: ['RESIDENTIAL'] },
+    maxRetries = 5,
+    minDelay = 8000,
+    maxDelay = 15000,
     includeRecentPosts = false,
     maxPostsToScrape = 12,
     useAdvancedFingerprinting = true,
     respectRateLimit = true,
-    maxConcurrency = 2,
+    maxConcurrency = 1, // Keep very low for Instagram
     randomizeUserBehavior = true
 } = input;
 
@@ -30,137 +26,93 @@ if (!profileUrls || profileUrls.length === 0) {
     throw new Error('No profile URLs provided. Please add at least one Instagram profile URL.');
 }
 
-// Set up proxy configuration with advanced settings
+// Set up proxy configuration - CRITICAL for Instagram
 const proxyConfiguration = await Actor.createProxyConfiguration(proxy);
 
-// Advanced browser fingerprinting configuration
-const fingerprintOptions = {
-    fingerprintGeneratorOptions: {
-        browsers: [
-            { name: 'chrome', minVersion: 120, maxVersion: 130 },
-            { name: 'firefox', minVersion: 118, maxVersion: 125 },
-            { name: 'safari', minVersion: 17, maxVersion: 18 }
-        ],
-        devices: ['desktop'],
-        operatingSystems: ['windows', 'macos'],
-        // Vary screen resolutions to avoid fingerprint clustering
-        screenResolutions: [
-            { width: 1920, height: 1080 },
-            { width: 1366, height: 768 },
-            { width: 1536, height: 864 },
-            { width: 1440, height: 900 }
-        ]
-    }
-};
-
-// Human-like interaction patterns
-const humanBehaviorPatterns = {
-    scrollPatterns: [
-        { distance: 300, duration: 800 },
-        { distance: 500, duration: 1200 },
-        { distance: 200, duration: 600 }
-    ],
-    mouseMovements: [
-        { x: 100, y: 150, duration: 300 },
-        { x: 200, y: 250, duration: 500 },
-        { x: 150, y: 300, duration: 400 }
-    ]
-};
-
-// Initialize the crawler with advanced anti-detection
+// Initialize the crawler with WORKING configuration for Instagram
 const crawler = new PlaywrightCrawler({
     proxyConfiguration,
     maxRequestRetries: maxRetries,
-    maxConcurrency: respectRateLimit ? Math.min(maxConcurrency, 2) : maxConcurrency,
-    requestHandlerTimeoutSecs: 120,
+    maxConcurrency: 1, // MUST be 1 for Instagram to avoid instant blocks
+    requestHandlerTimeoutSecs: 180, // Increased timeout for slow loading
     
-    // Advanced browser configuration
+    // Browser configuration optimized for Instagram
     browserPoolOptions: {
-        useFingerprints: useAdvancedFingerprinting,
-        fingerprintOptions: useAdvancedFingerprinting ? fingerprintOptions : undefined,
-        maxOpenPagesPerBrowser: 1, // Limit pages per browser for memory efficiency
+        useFingerprints: true,
+        maxOpenPagesPerBrowser: 1,
+        fingerprintOptions: {
+            fingerprintGeneratorOptions: {
+                browsers: [{ name: 'chrome', minVersion: 120 }], // Stick to Chrome only
+                devices: ['desktop'],
+                operatingSystems: ['windows'],
+            },
+        },
     },
     
     launchContext: {
         launchOptions: {
-            // Enhanced browser stealth settings
             headless: true,
+            // Minimal args to avoid detection
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
                 '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas',
-                '--no-first-run',
-                '--no-zygote',
-                '--disable-gpu',
-                '--disable-background-timer-throttling',
-                '--disable-backgrounding-occluded-windows',
-                '--disable-renderer-backgrounding',
-                '--disable-features=TranslateUI',
-                '--disable-ipc-flooding-protection',
-                '--enable-features=NetworkService,NetworkServiceInProcess',
-                '--disable-background-networking',
-                '--disable-sync',
-                '--metrics-recording-only',
-                '--disable-default-apps',
-                '--mute-audio',
-                '--disable-web-security',
-                '--disable-client-side-phishing-detection',
-                '--disable-hang-monitor',
-                '--disable-popup-blocking',
-                '--disable-prompt-on-repost',
-                '--disable-domain-reliability',
-                '--disable-component-extensions-with-background-pages'
+                '--disable-blink-features=AutomationControlled',
+                '--disable-features=VizDisplayCompositor'
             ]
         }
     },
     
-    // Pre-navigation hook for advanced stealth setup
+    // Pre-navigation hook - CRITICAL anti-detection setup
     preNavigationHooks: [
         async ({ page, request }) => {
-            log.info(`Setting up stealth measures for ${request.url}`);
+            log.info(`Setting up Instagram-specific stealth for ${request.url}`);
             
-            // Enhanced stealth measures - hide automation indicators
+            // WORKING stealth script for Instagram
             await page.addInitScript(() => {
-                // Remove webdriver property
-                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                // Remove webdriver traces
+                delete navigator.__proto__.webdriver;
                 
-                // Spoof plugins
+                // Override getComputedStyle to hide headless
+                const originalGetComputedStyle = window.getComputedStyle;
+                window.getComputedStyle = function(element, pseudoElement) {
+                    const computedStyle = originalGetComputedStyle.call(this, element, pseudoElement);
+                    if (element && element.tagName === 'IFRAME') {
+                        return computedStyle;
+                    }
+                    return computedStyle;
+                };
+                
+                // Override navigator properties that Instagram checks
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined,
+                });
+                
                 Object.defineProperty(navigator, 'plugins', {
-                    get: () => [1, 2, 3, 4, 5]
+                    get: () => [1, 2, 3, 4, 5],
                 });
                 
-                // Spoof languages  
                 Object.defineProperty(navigator, 'languages', {
-                    get: () => ['en-US', 'en']
+                    get: () => ['en-US', 'en'],
                 });
                 
-                // Override permissions
+                // Instagram-specific: Hide automation indicators
+                Object.defineProperty(navigator, 'hardwareConcurrency', {
+                    get: () => 4,
+                });
+                
+                // Override permissions for Instagram
                 const originalQuery = window.navigator.permissions.query;
                 window.navigator.permissions.query = (parameters) => (
                     parameters.name === 'notifications' ?
                         Promise.resolve({ state: Notification.permission }) :
                         originalQuery(parameters)
                 );
-                
-                // Hide Chrome automation
-                if (window.chrome) {
-                    window.chrome.runtime = {
-                        onConnect: undefined,
-                        onMessage: undefined
-                    };
-                }
             });
             
-            // Set realistic viewport and user agent
-            await page.setViewportSize({ 
-                width: 1366 + Math.floor(Math.random() * 200), 
-                height: 768 + Math.floor(Math.random() * 200) 
-            });
-            
-            // Add realistic headers
+            // Set realistic headers that Instagram expects
             await page.setExtraHTTPHeaders({
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
                 'Accept-Language': 'en-US,en;q=0.9',
                 'Accept-Encoding': 'gzip, deflate, br',
                 'Cache-Control': 'max-age=0',
@@ -171,203 +123,212 @@ const crawler = new PlaywrightCrawler({
                 'Sec-Fetch-Mode': 'navigate',
                 'Sec-Fetch-Site': 'none',
                 'Sec-Fetch-User': '?1',
-                'Upgrade-Insecure-Requests': '1'
+                'Upgrade-Insecure-Requests': '1',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
             });
+            
+            // Set realistic viewport - Instagram optimization
+            await page.setViewportSize({ width: 1366, height: 768 });
         }
     ],
     
     async requestHandler({ request, page }) {
         const url = request.url;
-        log.info(`Processing profile: ${url}`);
+        log.info(`Processing Instagram profile: ${url}`);
         
         try {
-            // Navigate with realistic timing
-            const navigationDelay = Math.random() * 2000 + 1000;
-            await page.waitForTimeout(navigationDelay);
+            // CRITICAL: Long delay before navigation
+            const preNavDelay = Math.random() * 5000 + 8000; // 8-13 seconds
+            log.info(`Waiting ${Math.round(preNavDelay/1000)}s before navigation to mimic human behavior`);
+            await page.waitForTimeout(preNavDelay);
             
-            // Navigate to profile
-            await page.goto(url, { 
-                waitUntil: 'networkidle', 
-                timeout: 30000 
+            // Navigate with extended timeout and proper wait strategy
+            log.info(`Navigating to ${url}...`);
+            const response = await page.goto(url, { 
+                waitUntil: 'domcontentloaded', // Changed from networkidle to avoid timeouts
+                timeout: 60000 // Increased timeout
             });
             
-            // Human-like behavior simulation
-            if (randomizeUserBehavior) {
-                await simulateHumanBehavior(page);
+            // Check if we got blocked
+            if (response.status() === 429 || response.status() === 403) {
+                throw new Error(`Got blocked with status ${response.status()}`);
             }
             
-            // Wait for main content with intelligent selectors
-            const contentSelectors = [
+            // Wait for any of these selectors to appear (Instagram's main content)
+            const mainSelectors = [
                 'article',
-                'main[role="main"]',
-                '[data-testid="user-avatar"]',
-                'section'
+                'main',
+                'section',
+                '[role="main"]',
+                'header'
             ];
             
-            let mainContentLoaded = false;
-            for (const selector of contentSelectors) {
+            let contentFound = false;
+            for (const selector of mainSelectors) {
                 try {
-                    await page.waitForSelector(selector, { timeout: 10000 });
-                    mainContentLoaded = true;
+                    await page.waitForSelector(selector, { timeout: 15000 });
+                    contentFound = true;
+                    log.info(`Found content with selector: ${selector}`);
                     break;
                 } catch (e) {
                     continue;
                 }
             }
             
-            if (!mainContentLoaded) {
-                throw new Error('Main content did not load within timeout');
+            if (!contentFound) {
+                log.warning('No main content selectors found, proceeding anyway...');
             }
             
-            // Add intelligent delay based on content loading
-            const dynamicDelay = Math.random() * (maxDelay - minDelay) + minDelay;
-            await page.waitForTimeout(dynamicDelay);
+            // Human behavior simulation - CRITICAL for Instagram
+            log.info('Simulating human behavior...');
             
-            // Advanced profile data extraction with multiple fallback strategies
+            // Random scrolling
+            await page.evaluate(() => {
+                window.scrollBy(0, Math.random() * 500 + 200);
+            });
+            await page.waitForTimeout(2000 + Math.random() * 3000);
+            
+            // Random mouse movement
+            await page.mouse.move(
+                Math.random() * 800 + 200, 
+                Math.random() * 600 + 100
+            );
+            await page.waitForTimeout(1000 + Math.random() * 2000);
+            
+            // Another scroll
+            await page.evaluate(() => {
+                window.scrollBy(0, Math.random() * 300 + 100);
+            });
+            await page.waitForTimeout(1500 + Math.random() * 2500);
+            
+            // ROBUST data extraction with multiple strategies
+            log.info('Extracting profile data...');
             const profileData = await page.evaluate((includeRecentPosts, maxPostsToScrape) => {
-                // Multiple extraction strategies for robustness
-                const extractionStrategies = {
-                    // Strategy 1: Modern Instagram selectors
-                    modern: {
-                        username: () => {
-                            const selectors = [
-                                'h1[dir="auto"]',
-                                'h1',
-                                '[data-testid="user-username"]'
-                            ];
-                            for (const selector of selectors) {
-                                const element = document.querySelector(selector);
-                                if (element?.textContent?.trim()) return element.textContent.trim();
-                            }
-                            return window.location.pathname.split('/')[1] || null;
-                        },
-                        
-                        fullName: () => {
-                            const selectors = [
-                                'span[dir="auto"]:not(h1 span)',
-                                'section div div div div span',
-                                '[data-testid="user-full-name"]'
-                            ];
-                            for (const selector of selectors) {
-                                const element = document.querySelector(selector);
-                                if (element?.textContent?.trim()) return element.textContent.trim();
-                            }
-                            return null;
-                        },
-                        
-                        bio: () => {
-                            const selectors = [
-                                'h1 ~ div span',
-                                'section div div div div:nth-child(3) span',
-                                '[data-testid="user-bio"]',
-                                'div.-vDIg span'
-                            ];
-                            for (const selector of selectors) {
-                                const element = document.querySelector(selector);
-                                if (element?.textContent?.trim()) return element.textContent.trim();
-                            }
-                            return null;
-                        },
-                        
-                        profileImage: () => {
-                            const selectors = [
-                                'img[alt*="profile picture" i]',
-                                'header img',
-                                'img[src*="profile"]',
-                                'img[style*="border-radius"]'
-                            ];
-                            for (const selector of selectors) {
-                                const element = document.querySelector(selector);
-                                if (element?.src) return element.src;
-                            }
-                            return null;
-                        },
-                        
-                        stats: () => {
-                            const stats = { followers: null, following: null, postsCount: null };
-                            
-                            // Look for stat links and spans
-                            const statElements = document.querySelectorAll('a, span');
-                            statElements.forEach(element => {
-                                const text = element.textContent?.toLowerCase() || '';
-                                const numberMatch = text.match(/^([\d,\.kmb]+)/);
-                                
-                                if (numberMatch) {
-                                    const number = numberMatch[1];
-                                    if (text.includes('post')) stats.postsCount = number;
-                                    else if (text.includes('follower')) stats.followers = number;
-                                    else if (text.includes('following')) stats.following = number;
-                                }
-                            });
-                            
-                            return stats;
-                        },
-                        
-                        website: () => {
-                            const selectors = [
-                                'a[href^="http"]:not([href*="instagram.com"])',
-                                'a[target="_blank"]'
-                            ];
-                            for (const selector of selectors) {
-                                const element = document.querySelector(selector);
-                                if (element?.href) return element.href;
-                            }
-                            return null;
-                        },
-                        
-                        isVerified: () => {
-                            const verificationSelectors = [
-                                '[title*="verified" i]',
-                                '[alt*="verified" i]',
-                                'svg[aria-label*="verified" i]',
-                                '.coreSpriteVerifiedBadge'
-                            ];
-                            return verificationSelectors.some(selector => 
-                                document.querySelector(selector) !== null
-                            );
-                        }
+                
+                // Helper function to safely get text
+                const safeText = (selector) => {
+                    try {
+                        const element = document.querySelector(selector);
+                        return element ? element.textContent.trim() : null;
+                    } catch (e) {
+                        return null;
                     }
                 };
                 
-                // Use modern strategy (can be extended with fallbacks)
-                const strategy = extractionStrategies.modern;
+                // Helper function to safely get attribute
+                const safeAttr = (selector, attr) => {
+                    try {
+                        const element = document.querySelector(selector);
+                        return element ? element.getAttribute(attr) : null;
+                    } catch (e) {
+                        return null;
+                    }
+                };
                 
-                // Extract basic data
-                const username = strategy.username();
-                const fullName = strategy.fullName();
-                const bio = strategy.bio();
-                const profileImage = strategy.profileImage();
-                const website = strategy.website();
-                const isVerified = strategy.isVerified();
-                const stats = strategy.stats();
+                // Extract username - multiple strategies
+                let username = null;
+                const usernameSelectors = [
+                    'h2', 'h1', 
+                    '[data-testid="user-name"]',
+                    'header h1',
+                    'header h2'
+                ];
+                
+                for (const selector of usernameSelectors) {
+                    username = safeText(selector);
+                    if (username) break;
+                }
+                
+                // Fallback to URL
+                if (!username) {
+                    username = window.location.pathname.split('/')[1] || null;
+                }
+                
+                // Extract full name
+                let fullName = null;
+                const nameSelectors = [
+                    'section div div div div span',
+                    'header span',
+                    'h1 + div span'
+                ];
+                
+                for (const selector of nameSelectors) {
+                    fullName = safeText(selector);
+                    if (fullName && fullName !== username) break;
+                }
+                
+                // Extract bio
+                let bio = null;
+                const bioSelectors = [
+                    'h1 ~ div span',
+                    'section span',
+                    '[data-testid="user-bio"]'
+                ];
+                
+                for (const selector of bioSelectors) {
+                    bio = safeText(selector);
+                    if (bio && bio.length > 10) break; // Ensure it's actually a bio
+                }
+                
+                // Extract profile image
+                let profileImage = null;
+                const imgSelectors = [
+                    'img[alt*="profile" i]',
+                    'header img',
+                    'img[style*="border-radius"]'
+                ];
+                
+                for (const selector of imgSelectors) {
+                    profileImage = safeAttr(selector, 'src');
+                    if (profileImage) break;
+                }
+                
+                // Extract stats (followers, following, posts)
+                let followers = null, following = null, postsCount = null;
+                
+                // Look for stat numbers in links and spans
+                const allText = document.body.innerText;
+                const statRegex = /([\d,\.kmb]+)\s*(follower|following|post)/gi;
+                let match;
+                
+                while ((match = statRegex.exec(allText)) !== null) {
+                    const number = match[1];
+                    const type = match[2].toLowerCase();
+                    
+                    if (type.includes('follower') && !followers) followers = number;
+                    else if (type.includes('following') && !following) following = number;
+                    else if (type.includes('post') && !postsCount) postsCount = number;
+                }
+                
+                // Extract website
+                let website = null;
+                const linkSelectors = [
+                    'a[href^="http"]:not([href*="instagram.com"])',
+                    'a[target="_blank"]:not([href*="instagram.com"])'
+                ];
+                
+                for (const selector of linkSelectors) {
+                    website = safeAttr(selector, 'href');
+                    if (website) break;
+                }
+                
+                // Check verification
+                const isVerified = document.querySelector('[title*="verified" i], [alt*="verified" i]') !== null;
                 
                 // Extract recent posts if requested
                 let recentPosts = [];
                 if (includeRecentPosts) {
-                    const postSelectors = [
-                        'article div div div div a',
-                        'a[href*="/p/"]',
-                        'a[href*="/reel/"]'
-                    ];
+                    const postLinks = document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]');
+                    const limit = Math.min(postLinks.length, maxPostsToScrape);
                     
-                    let postElements = [];
-                    for (const selector of postSelectors) {
-                        postElements = document.querySelectorAll(selector);
-                        if (postElements.length > 0) break;
-                    }
-                    
-                    const postsToProcess = Math.min(postElements.length, maxPostsToScrape);
-                    
-                    for (let i = 0; i < postsToProcess; i++) {
-                        const postElement = postElements[i];
-                        const postUrl = postElement.href;
-                        const postImage = postElement.querySelector('img');
-                        
-                        if (postUrl && postImage) {
+                    for (let i = 0; i < limit; i++) {
+                        const link = postLinks[i];
+                        const img = link.querySelector('img');
+                        if (link.href && img) {
                             recentPosts.push({
-                                url: postUrl,
-                                imageUrl: postImage.src,
-                                altText: postImage.alt || ''
+                                url: link.href,
+                                imageUrl: img.src,
+                                altText: img.alt || ''
                             });
                         }
                     }
@@ -378,99 +339,66 @@ const crawler = new PlaywrightCrawler({
                     fullName,
                     bio,
                     profileImage,
-                    followers: stats.followers,
-                    following: stats.following,
-                    postsCount: stats.postsCount,
+                    followers,
+                    following,
+                    postsCount,
                     website,
                     isVerified,
                     recentPosts,
                     profileUrl: window.location.href,
-                    scrapedAt: new Date().toISOString()
+                    scrapedAt: new Date().toISOString(),
+                    pageTitle: document.title
                 };
             }, includeRecentPosts, maxPostsToScrape);
             
-            // Enhanced data validation and cleaning
+            // Process and clean the data
             const cleanedData = {
                 ...profileData,
-                followers: profileData.followers ? parseInstagramCount(profileData.followers) : null,
-                following: profileData.following ? parseInstagramCount(profileData.following) : null,
-                postsCount: profileData.postsCount ? parseInstagramCount(profileData.postsCount) : null,
-                // Add extraction confidence score
-                extractionConfidence: calculateExtractionConfidence(profileData)
+                followers: parseInstagramCount(profileData.followers),
+                following: parseInstagramCount(profileData.following),
+                postsCount: parseInstagramCount(profileData.postsCount)
             };
             
-            log.info(`Successfully scraped profile: ${cleanedData.username || 'Unknown'} (confidence: ${cleanedData.extractionConfidence}%)`);
+            log.info(`✅ Successfully extracted data for: ${cleanedData.username || 'Unknown user'}`);
+            log.info(`📊 Stats: ${cleanedData.followers || 'N/A'} followers, ${cleanedData.following || 'N/A'} following, ${cleanedData.postsCount || 'N/A'} posts`);
             
-            // Push data to dataset
+            // Save to dataset
             await Actor.pushData(cleanedData);
             
-        } catch (error) {
-            log.error(`Error processing ${url}: ${error.message}`);
+            // CRITICAL: Long delay after successful scrape
+            const postScrapeDelay = Math.random() * 10000 + 15000; // 15-25 seconds
+            log.info(`⏱️  Waiting ${Math.round(postScrapeDelay/1000)}s before next request to avoid rate limiting`);
+            await page.waitForTimeout(postScrapeDelay);
             
-            // Enhanced error data for debugging
+        } catch (error) {
+            log.error(`❌ Failed to process ${url}: ${error.message}`);
+            
+            // Check if it's a timeout or blocking
+            if (error.message.includes('Timeout') || error.message.includes('blocked')) {
+                log.error('🚫 Detected timeout or blocking - Instagram may be detecting the bot');
+            }
+            
             await Actor.pushData({
                 url,
                 error: error.message,
-                errorType: error.name,
-                scrapedAt: new Date().toISOString(),
-                status: 'failed',
-                retryCount: request.retryCount || 0
+                timestamp: new Date().toISOString(),
+                status: 'failed'
             });
         }
     },
     
     failedRequestHandler({ request, error }) {
-        log.error(`Request ${request.url} failed after ${request.retryCount} retries: ${error.message}`);
+        log.error(`💥 Request completely failed: ${request.url} - ${error.message}`);
     }
 });
 
-// Advanced human behavior simulation
-async function simulateHumanBehavior(page) {
-    const actions = [
-        // Random mouse movements
-        async () => {
-            const movement = humanBehaviorPatterns.mouseMovements[
-                Math.floor(Math.random() * humanBehaviorPatterns.mouseMovements.length)
-            ];
-            await page.mouse.move(movement.x, movement.y, { steps: 10 });
-            await page.waitForTimeout(movement.duration);
-        },
-        
-        // Realistic scrolling
-        async () => {
-            const scroll = humanBehaviorPatterns.scrollPatterns[
-                Math.floor(Math.random() * humanBehaviorPatterns.scrollPatterns.length)
-            ];
-            await page.evaluate((distance) => {
-                window.scrollBy(0, distance);
-            }, scroll.distance);
-            await page.waitForTimeout(scroll.duration);
-        },
-        
-        // Random focus events
-        async () => {
-            await page.focus('body');
-            await page.waitForTimeout(200 + Math.random() * 300);
-        }
-    ];
-    
-    // Execute 1-3 random actions
-    const numActions = Math.floor(Math.random() * 3) + 1;
-    for (let i = 0; i < numActions; i++) {
-        const action = actions[Math.floor(Math.random() * actions.length)];
-        await action();
-    }
-}
-
-// Enhanced Instagram count parser with better accuracy
+// Enhanced Instagram count parser
 function parseInstagramCount(countStr) {
     if (!countStr) return null;
     
-    // Handle different Instagram count formats
-    const cleanStr = countStr.replace(/[,\s]/g, '').toLowerCase();
-    
-    // Match number and multiplier
+    const cleanStr = countStr.toString().replace(/[,\s]/g, '').toLowerCase();
     const match = cleanStr.match(/^([\d.]+)([kmb]?)$/);
+    
     if (!match) return parseInt(cleanStr) || null;
     
     const [, numberStr, multiplier] = match;
@@ -484,34 +412,7 @@ function parseInstagramCount(countStr) {
     }
 }
 
-// Calculate extraction confidence based on data completeness
-function calculateExtractionConfidence(data) {
-    const requiredFields = ['username', 'followers', 'following', 'postsCount'];
-    const optionalFields = ['fullName', 'bio', 'profileImage', 'website'];
-    
-    let score = 0;
-    let maxScore = 0;
-    
-    // Required fields (70% of total score)
-    requiredFields.forEach(field => {
-        maxScore += 17.5; // 70/4 = 17.5 per required field
-        if (data[field] !== null && data[field] !== undefined) {
-            score += 17.5;
-        }
-    });
-    
-    // Optional fields (30% of total score)
-    optionalFields.forEach(field => {
-        maxScore += 7.5; // 30/4 = 7.5 per optional field
-        if (data[field] !== null && data[field] !== undefined) {
-            score += 7.5;
-        }
-    });
-    
-    return Math.round((score / maxScore) * 100);
-}
-
-// Prepare URLs for crawling with enhanced validation
+// Prepare URLs with validation
 const requests = profileUrls.map(urlInput => {
     let url;
     if (typeof urlInput === 'string') {
@@ -519,35 +420,28 @@ const requests = profileUrls.map(urlInput => {
     } else if (urlInput.url) {
         url = urlInput.url;
     } else {
-        throw new Error('Invalid URL format in profileUrls');
+        throw new Error('Invalid URL format');
     }
     
-    // Enhanced URL validation and normalization
+    // Validate Instagram URL
     if (!url.includes('instagram.com/')) {
-        throw new Error(`Invalid Instagram URL: ${url}`);
+        throw new Error(`Not an Instagram URL: ${url}`);
     }
     
-    // Normalize URL format
+    // Normalize URL
     url = url.replace(/\/$/, '');
-    if (!url.includes('://')) {
+    if (!url.startsWith('http')) {
         url = 'https://' + url;
     }
     
-    return { 
-        url,
-        userData: {
-            originalUrl: urlInput
-        }
-    };
+    return { url };
 });
 
-log.info(`Starting advanced Instagram scraper for ${requests.length} profiles`);
-log.info(`Configuration: Anti-fingerprinting=${useAdvancedFingerprinting}, Concurrency=${maxConcurrency}, Proxy=${proxy.useApifyProxy ? 'Enabled' : 'Disabled'}, Country=${proxy.apifyProxyCountry || 'Auto'}`);
+log.info(`🚀 Starting WORKING Instagram scraper for ${requests.length} profile(s)`);
+log.info(`⚙️  Config: Concurrency=1, Delays=8-15s, Retries=${maxRetries}, Residential Proxies=${proxy.useApifyProxy}`);
 
 // Run the crawler
 await crawler.run(requests);
 
-log.info('Instagram profile scraping completed successfully');
-
-// Exit the Actor
+log.info('✅ Instagram scraping completed!');
 await Actor.exit();

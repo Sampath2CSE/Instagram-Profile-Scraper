@@ -47,30 +47,30 @@
     "maxRetries": {
       "title": "Maximum Retries",
       "type": "integer",
-      "description": "Maximum number of retry attempts for failed requests",
-      "default": 3,
-      "minimum": 0,
+      "description": "Maximum number of retry attempts for failed requests (Instagram needs more retries)",
+      "default": 5,
+      "minimum": 3,
       "maximum": 10,
       "unit": "attempts",
-      "sectionCaption": "Advanced Settings",
-      "sectionDescription": "Fine-tune the scraper's behavior and performance"
+      "sectionCaption": "Instagram-Optimized Settings",
+      "sectionDescription": "Settings specifically tuned for Instagram's anti-bot systems"
     },
     "minDelay": {
       "title": "Minimum Delay Between Requests",
       "type": "integer", 
-      "description": "Minimum delay in milliseconds between requests (randomized for human-like behavior)",
-      "default": 3000,
-      "minimum": 1000,
-      "maximum": 10000,
+      "description": "Minimum delay in milliseconds between requests (Instagram requires 8+ seconds)",
+      "default": 8000,
+      "minimum": 5000,
+      "maximum": 30000,
       "unit": "ms"
     },
     "maxDelay": {
       "title": "Maximum Delay Between Requests",
       "type": "integer", 
-      "description": "Maximum delay in milliseconds between requests (randomized for human-like behavior)",
-      "default": 7000,
-      "minimum": 2000,
-      "maximum": 15000,
+      "description": "Maximum delay in milliseconds between requests (Instagram requires long delays)",
+      "default": 15000,
+      "minimum": 10000,
+      "maximum": 45000,
       "unit": "ms"
     },
     "useAdvancedFingerprinting": {
@@ -90,10 +90,10 @@
     "maxConcurrency": {
       "title": "Maximum Concurrency",
       "type": "integer",
-      "description": "Maximum number of concurrent requests (automatically limited if 'Respect Rate Limits' is enabled)",
-      "default": 2,
+      "description": "Maximum concurrent requests (MUST be 1 for Instagram to avoid blocks)",
+      "default": 1,
       "minimum": 1,
-      "maximum": 5,
+      "maximum": 2,
       "unit": "requests"
     },
     "randomizeUserBehavior": {
