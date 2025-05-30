@@ -1,5 +1,219 @@
 // main.js - Working Instagram Profile Scraper (HTTP-based like Apify's official version)
-import { Actor } from 'apify';
+import { Actor }
+
+// Aggressive bio extraction from ALL possible sources
+function extractBioFromAnywhere($, bodyHtml) {
+    log.info('🔍 Aggressive bio extraction starting...');
+    
+    // Method 1: Look in ALL script tags for JSON data
+    $('script').each((i, script) => {
+        const content = $(script).html();
+        if (content) {
+            // Look for biography in JSON
+            const bioMatches = content.match(/"biography":\s*"([^"]+)"/g);
+            if (bioMatches) {
+                bioMatches.forEach(match => {
+                    const bioText = match.match(/"biography":\s*"([^"]+)"/)[1];
+                    if (bioText && bioText.length > 3) {
+                        log.info(`📝 Found bio in script: ${bioText}`);
+                        return bioText;
+                    }
+                });
+            }
+            
+            // Look for any description fields
+            const descMatches = content.match(/"description":\s*"([^"]+)"/g);
+            if (descMatches) {
+                descMatches.forEach(match => {
+                    const descText = match.match(/"description":\s*"([^"]+)"/)[1];
+                    if (descText && descText.length > 10 && !descText.includes('See Instagram photos')) {
+                        log.info(`📝 Found description in script: ${descText}`);
+                        return descText;
+                    }
+                });
+            }
+        }
+    });
+    
+    // Method 2: Look in raw HTML for common bio patterns
+    const bioKeywords = ['Digital creator', 'Creator', 'Entrepreneur', 'Founder', 'CEO', 'Coach', 'Artist', 'Automation', 'Expert'];
+    const bodyText = $('body').text();
+    
+    for (const keyword of bioKeywords) {
+        if (bodyText.includes(keyword)) {
+            log.info(`🎯 Found keyword "${keyword}" in body`);
+            
+            // Extract text around this keyword
+            const regex = new RegExp(`${keyword}[^0-9]*?(?=\\d+|$)`, 'i');
+            const match = bodyText.match(regex);
+            if (match && match[0]) {
+                let bio = match[0].trim();
+                bio = bio.replace(/\s+/g, ' ');
+                if (bio.length > 10 && bio.length < 500) {
+                    log.info(`📝 Extracted bio around keyword: ${bio}`);
+                    return bio;
+                }
+            }
+        }
+    }
+    
+    // Method 3: Look in HTML attributes and data attributes
+    const bioSelectors = [
+        '[data-bio]',
+        '[data-description]', 
+        '.bio',
+        '.description',
+        '.profile-bio'
+    ];
+    
+    for (const selector of bioSelectors) {
+        const element = $(selector);
+        if (element.length) {
+            const bioText = element.text() || element.attr('data-bio') || element.attr('data-description');
+            if (bioText && bioText.length > 10) {
+                log.info(`📝 Found bio in selector ${selector}: ${bioText}`);
+                return bioText.trim();
+            }
+        }
+    }
+    
+    log.info('❌ No bio found with aggressive extraction');
+    return null;
+}
+
+// Aggressive website extraction from ALL possible sources  
+function extractWebsiteFromAnywhere($, bodyHtml) {
+    log.info('🔗 Aggressive website extraction starting...');
+    
+    // Method 1: Look in ALL script tags for external URLs
+    $('script').each((i, script) => {
+        const content = $(script).html();
+        if (content) {
+            // Look for external_url in JSON
+            const urlMatches = content.match(/"external_url":\s*"([^"]+)"/g);
+            if (urlMatches) {
+                urlMatches.forEach(match => {
+                    const url = match.match(/"external_url":\s*"([^"]+)"/)[1];
+                    if (url && !url.includes('instagram.com')) {
+                        log.info(`🔗 Found external_url in script: ${url}`);
+                        return url;
+                    }
+                });
+            }
+            
+            // Look for any linktr.ee or common bio links
+            const bioLinkMatches = content.match(/(linktr\.ee\/[^"'\s]+|bio\.link\/[^"'\s]+)/gi);
+            if (bioLinkMatches) {
+                const link = bioLinkMatches[0];
+                log.info(`🔗 Found bio link in script: ${link}`);
+                return link.startsWith('http') ? link : `https://${link}`;
+            }
+        }
+    });
+    
+    // Method 2: Look in raw HTML for URL patterns
+    const urlPatterns = [
+        /(linktr\.ee\/[\w\.-]+)/gi,
+        /(bio\.link\/[\w\.-]+)/gi,
+        /(linkin\.bio\/[\w\.-]+)/gi,
+        /(beacons\.ai\/[\w\.-]+)/gi,
+        /(bit\.ly\/[\w\.-]+)/gi,
+        /(tinyurl\.com\/[\w\.-]+)/gi,
+        /([\w-]+\.com\/[\w\.-]*)/gi
+    ];
+    
+    const fullHtml = bodyHtml || $('body').html();
+    
+    for (const pattern of urlPatterns) {
+        const matches = [...fullHtml.matchAll(pattern)];
+        if (matches.length > 0) {
+            const foundUrl = matches[0][1];
+            if (!foundUrl.includes('instagram.com') && !foundUrl.includes('facebook.com')) {
+                const website = foundUrl.startsWith('http') ? foundUrl : `https://${foundUrl}`;
+                log.info(`🔗 Found URL via pattern: ${website}`);
+                return website;
+            }
+        }
+    }
+    
+    // Method 3: Look in ALL link elements
+    const allLinks = [];
+    $('a').each((i, link) => {
+        const href = $(link).attr('href');
+        const text = $(link).text();
+        if (href) {
+            allLinks.push({ href, text });
+        }
+    });
+    
+    log.info(`🔍 Found ${allLinks.length} total links`);
+    
+    for (const link of allLinks) {
+        if (link.href && 
+            link.href.startsWith('http') && 
+            !link.href.includes('instagram.com') && 
+            !link.href.includes('facebook.com') &&
+            !link.href.includes('google.com')) {
+            log.info(`🔗 Found external link: ${link.href} (text: ${link.text})`);
+            return link.href;
+        }
+    }
+    
+    log.info('❌ No website found with aggressive extraction');
+    return null;
+}
+
+// Aggressive verification detection
+function detectVerification($, bodyHtml) {
+    log.info('✅ Checking verification status...');
+    
+    const bodyText = $('body').text().toLowerCase();
+    const fullHtml = (bodyHtml || $('body').html()).toLowerCase();
+    
+    // Check for various verification indicators
+    const verificationIndicators = [
+        'verified',
+        'blue checkmark',
+        'blue check',
+        'verified account',
+        'verification badge',
+        'checkmark'
+    ];
+    
+    for (const indicator of verificationIndicators) {
+        if (bodyText.includes(indicator) || fullHtml.includes(indicator)) {
+            log.info(`✅ Found verification indicator: ${indicator}`);
+            return true;
+        }
+    }
+    
+    // Check for verification in script tags
+    $('script').each((i, script) => {
+        const content = $(script).html();
+        if (content && content.toLowerCase().includes('verified')) {
+            log.info('✅ Found verification in script tag');
+            return true;
+        }
+    });
+    
+    // Check for SVG or icon elements that might indicate verification
+    const verificationSelectors = [
+        'svg[aria-label*="verified" i]',
+        '[title*="verified" i]',
+        '[alt*="verified" i]',
+        '.verified',
+        '[data-verified]'
+    ];
+    
+    for (const selector of verificationSelectors) {
+        if ($(selector).length > 0) {
+            log.info(`✅ Found verification via selector: ${selector}`);
+            return true;
+        }
+    }
+    
+    log.info('❌ No verification indicators found');
+    return false; from 'apify';
 import { CheerioCrawler, log } from 'crawlee';
 
 // Initialize the Actor
@@ -123,7 +337,12 @@ const crawler = new CheerioCrawler({
             }
             
             // Extract profile data using multiple strategies
-            const profileData = extractProfileData($, url);
+            const profileData = extractProfileData($, url, body);
+            
+            // Post-process to ensure we get bio and website from ANY source
+            profileData.bio = profileData.bio || extractBioFromAnywhere($, body);
+            profileData.website = profileData.website || extractWebsiteFromAnywhere($, body);
+            profileData.isVerified = profileData.isVerified || detectVerification($, body);
             
             // Extract recent posts if requested
             if (includeRecentPosts) {
