@@ -326,105 +326,66 @@ function extractBioFromAnywhere($, bodyHtml) {
         
         const content = $(script).html();
         if (content) {
+            // Look for Instagram's internal data structure
             try {
-                // Look for all JSON-like structures containing biography
-                const bioPatterns = [
-                    /"biography":\s*"([^"\\]*(?:\\.[^"\\]*)*)"/g,
-                    /"user":\s*{[^}]*"biography":\s*"([^"\\]*(?:\\.[^"\\]*)*)"/g,
-                    /"node":\s*{[^}]*"biography":\s*"([^"\\]*(?:\\.[^"\\]*)*)"/g
-                ];
-                
-                for (const pattern of bioPatterns) {
-                    const matches = [...content.matchAll(pattern)];
-                    for (const match of matches) {
-                        if (match[1]) {
-                            let bioText = match[1];
-                            
-                            // Properly decode JSON string
-                            try {
-                                bioText = JSON.parse(`"${bioText}"`);
-                            } catch (e) {
-                                // If JSON parsing fails, manually handle common escapes
-                                bioText = bioText
-                                    .replace(/\\"/g, '"')
-                                    .replace(/\\n/g, ' ')
-                                    .replace(/\\r/g, '')
-                                    .replace(/\\t/g, ' ')
-                                    .replace(/\\\\/g, '\\')
-                                    .replace(/\\u([0-9a-fA-F]{4})/g, (match, hex) => {
-                                        return String.fromCharCode(parseInt(hex, 16));
-                                    });
-                            }
-                            
-                            bioText = bioText.trim();
-                            
-                            if (bioText.length > 3 && bioText.length < 1000) {
-                                log.info(`📝 Found biography in script: ${bioText}`);
-                                foundBio = bioText;
-                                return false;
-                            }
-                        }
+                // Pattern 1: Look for "biography" in any JSON structure
+                const bioMatch = content.match(/"biography":\s*"([^"\\]*(?:\\.[^"\\]*)*)"/);
+                if (bioMatch && bioMatch[1]) {
+                    foundBio = bioMatch[1].replace(/\\"/g, '"').replace(/\\n/g, ' ').trim();
+                    if (foundBio.length > 3) {
+                        log.info(`📝 Found biography in script: ${foundBio}`);
+                        return false;
                     }
                 }
                 
-                // Alternative: Look for the full JSON object and parse it properly
-                if (content.includes('"biography"') && !foundBio) {
-                    log.info('🔍 Looking for complete JSON objects...');
-                    
-                    // Find JSON objects that contain biography
-                    const jsonObjectRegex = /{[^{}]*"biography"[^{}]*}/g;
-                    const jsonMatches = [...content.matchAll(jsonObjectRegex)];
-                    
-                    for (const jsonMatch of jsonMatches) {
-                        try {
-                            const jsonObj = JSON.parse(jsonMatch[0]);
-                            if (jsonObj.biography && jsonObj.biography.length > 3) {
-                                log.info(`📝 Found biography in JSON object: ${jsonObj.biography}`);
-                                foundBio = jsonObj.biography;
-                                return false;
-                            }
-                        } catch (e) {
-                            // Continue if JSON parsing fails
+                // Pattern 2: Look for user data with biography field
+                if (content.includes('"user"') && content.includes('"biography"')) {
+                    const userDataMatch = content.match(/"user":\s*{[^}]*"biography":\s*"([^"\\]*(?:\\.[^"\\]*)*)"/);
+                    if (userDataMatch && userDataMatch[1]) {
+                        foundBio = userDataMatch[1].replace(/\\"/g, '"').replace(/\\n/g, ' ').trim();
+                        if (foundBio.length > 3) {
+                            log.info(`📝 Found user biography in script: ${foundBio}`);
+                            return false;
                         }
                     }
                 }
-                
             } catch (e) {
-                log.info(`Error parsing script content: ${e.message}`);
+                // Continue if parsing fails
             }
         }
     });
     
     if (foundBio) return foundBio;
     
-    // Method 2: Look in raw body text for bio content with better pattern matching
+    // Method 2: Look in raw body text for bio content
     const bodyText = $('body').text();
-    const bioKeywords = [
-        'Digital creator', 'Creator', 'Entrepreneur', 'Founder', 'CEO', 'Coach', 
-        'Artist', 'Automation', 'Expert', 'Incubator', 'Templates', 'Get My',
-        'AI Automation', 'Automation Experts'
-    ];
+    const bioKeywords = ['Digital creator', 'Creator', 'Entrepreneur', 'Founder', 'CEO', 'Coach', 'Artist', 'Automation', 'Expert', 'Incubator', 'Templates'];
     
     for (const keyword of bioKeywords) {
         if (bodyText.includes(keyword)) {
             log.info(`🎯 Found keyword "${keyword}" in body`);
             
-            // More sophisticated bio extraction around keywords
+            // Extract text around this keyword (more sophisticated)
             const keywordIndex = bodyText.indexOf(keyword);
+            const beforeText = bodyText.substring(Math.max(0, keywordIndex - 100), keywordIndex);
+            const afterText = bodyText.substring(keywordIndex, keywordIndex + 200);
             
-            // Extract a reasonable chunk around the keyword
-            const startIndex = Math.max(0, keywordIndex - 50);
-            const endIndex = Math.min(bodyText.length, keywordIndex + 200);
-            const chunk = bodyText.substring(startIndex, endIndex);
+            // Look for bio-like patterns
+            const bioPatterns = [
+                new RegExp(`${keyword}[^\\d]*?(?=\\d+\\s*(?:posts|followers|following)|$)`, 'i'),
+                new RegExp(`([^\\d]*${keyword}[^\\d]*)(?=\\d|$)`, 'i')
+            ];
             
-            // Look for bio-like sentences
-            const sentences = chunk.split(/[.!?]\s+/);
-            for (const sentence of sentences) {
-                if (sentence.includes(keyword) && sentence.length > 10 && sentence.length < 300) {
-                    const cleanSentence = sentence.trim().replace(/\s+/g, ' ');
-                    if (!cleanSentence.match(/^\d+/) && !cleanSentence.includes('posts') && !cleanSentence.includes('followers')) {
-                        log.info(`📝 Extracted bio sentence: ${cleanSentence}`);
-                        return cleanSentence;
+            for (const pattern of bioPatterns) {
+                const match = afterText.match(pattern);
+                if (match && match[0]) {
+                    let bio = match[0].trim();
+                    bio = bio.replace(/\s+/g, ' ');
+                    bio = bio.replace(/^(posts|followers|following)\s*/i, '');
+                    
+                    if (bio.length > 10 && bio.length < 500) {
+                        log.info(`📝 Extracted bio around keyword: ${bio}`);
+                        return bio;
                     }
                 }
             }
@@ -448,94 +409,56 @@ function extractWebsiteFromAnywhere($, bodyHtml) {
         const content = $(script).html();
         if (content) {
             try {
-                // Look for external_url patterns
-                const urlPatterns = [
-                    /"external_url":\s*"([^"\\]*(?:\\.[^"\\]*)*)"/g,
-                    /"user":\s*{[^}]*"external_url":\s*"([^"\\]*(?:\\.[^"\\]*)*)"/g,
-                    /"node":\s*{[^}]*"external_url":\s*"([^"\\]*(?:\\.[^"\\]*)*)"/g
-                ];
-                
-                for (const pattern of urlPatterns) {
-                    const matches = [...content.matchAll(pattern)];
-                    for (const match of matches) {
-                        if (match[1]) {
-                            let url = match[1];
-                            
-                            // Properly decode JSON string
-                            try {
-                                url = JSON.parse(`"${url}"`);
-                            } catch (e) {
-                                // Manual decode if JSON parsing fails
-                                url = url
-                                    .replace(/\\"/g, '"')
-                                    .replace(/\\\//g, '/')
-                                    .replace(/\\\\/g, '\\');
-                            }
-                            
-                            if (url && url.includes('http') && !url.includes('instagram.com')) {
-                                log.info(`🔗 Found external_url in script: ${url}`);
-                                foundWebsite = url;
-                                return false;
-                            }
-                        }
+                // Pattern 1: Look for external_url in JSON
+                const externalUrlMatch = content.match(/"external_url":\s*"([^"\\]*(?:\\.[^"\\]*)*)"/);
+                if (externalUrlMatch && externalUrlMatch[1]) {
+                    const url = externalUrlMatch[1].replace(/\\"/g, '"').replace(/\\\//g, '/');
+                    if (url && !url.includes('instagram.com') && url.includes('http')) {
+                        log.info(`🔗 Found external_url in script: ${url}`);
+                        foundWebsite = url;
+                        return false;
                     }
                 }
                 
-                // Look for specific bio link services in JSON
-                const bioLinkPatterns = [
-                    /"[^"]*linktr\.ee\/[^"]+"/g,
-                    /"[^"]*bio\.link\/[^"]+"/g
-                ];
-                
-                for (const pattern of bioLinkPatterns) {
-                    const matches = [...content.matchAll(pattern)];
-                    for (const match of matches) {
-                        let link = match[0].replace(/"/g, '');
-                        if (link.includes('linktr.ee') || link.includes('bio.link')) {
-                            if (!link.startsWith('http')) {
-                                link = `https://${link}`;
-                            }
-                            log.info(`🔗 Found bio link in script: ${link}`);
-                            foundWebsite = link;
+                // Pattern 2: Look for user data with external_url
+                if (content.includes('"user"') && content.includes('"external_url"')) {
+                    const userUrlMatch = content.match(/"user":\s*{[^}]*"external_url":\s*"([^"\\]*(?:\\.[^"\\]*)*)"/);
+                    if (userUrlMatch && userUrlMatch[1]) {
+                        const url = userUrlMatch[1].replace(/\\"/g, '"').replace(/\\\//g, '/');
+                        if (url && !url.includes('instagram.com') && url.includes('http')) {
+                            log.info(`🔗 Found user external_url in script: ${url}`);
+                            foundWebsite = url;
                             return false;
                         }
                     }
                 }
                 
-                // Try to parse complete JSON objects with external_url
-                if (content.includes('"external_url"') && !foundWebsite) {
-                    const jsonObjectRegex = /{[^{}]*"external_url"[^{}]*}/g;
-                    const jsonMatches = [...content.matchAll(jsonObjectRegex)];
-                    
-                    for (const jsonMatch of jsonMatches) {
-                        try {
-                            const jsonObj = JSON.parse(jsonMatch[0]);
-                            if (jsonObj.external_url && jsonObj.external_url.includes('http')) {
-                                log.info(`🔗 Found external_url in JSON object: ${jsonObj.external_url}`);
-                                foundWebsite = jsonObj.external_url;
-                                return false;
-                            }
-                        } catch (e) {
-                            // Continue if JSON parsing fails
-                        }
+                // Pattern 3: Look for direct linktr.ee patterns in JSON
+                const linktrMatch = content.match(/"[^"]*linktr\.ee\/[^"]+"/g);
+                if (linktrMatch && linktrMatch[0]) {
+                    const link = linktrMatch[0].replace(/"/g, '');
+                    if (link.includes('linktr.ee')) {
+                        foundWebsite = link.startsWith('http') ? link : `https://${link}`;
+                        log.info(`🔗 Found linktr.ee in script: ${foundWebsite}`);
+                        return false;
                     }
                 }
-                
             } catch (e) {
-                log.info(`Error parsing website from script: ${e.message}`);
+                // Continue if parsing fails
             }
         }
     });
     
     if (foundWebsite) return foundWebsite;
     
-    // Method 2: Look in raw HTML for URL patterns (enhanced)
+    // Method 2: Look in raw HTML for URL patterns
     const urlPatterns = [
         /(https?:\/\/linktr\.ee\/[\w\.-]+)/gi,
         /(linktr\.ee\/[\w\.-]+)/gi,
         /(https?:\/\/bio\.link\/[\w\.-]+)/gi,
         /(bio\.link\/[\w\.-]+)/gi,
-        /(https?:\/\/[^\/\s]+\.com\/[\w\.-]*)/gi
+        /(https?:\/\/linkin\.bio\/[\w\.-]+)/gi,
+        /(linkin\.bio\/[\w\.-]+)/gi
     ];
     
     const fullHtml = bodyHtml || $('body').html();
