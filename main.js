@@ -494,18 +494,32 @@ function extractBioFromAnywhere($, bodyHtml) {
     
     let foundBio = null;
     
+    // Method 1: Look for ANY JSON-like structure containing biography
     $('script').each((i, script) => {
         if (foundBio) return false;
         const content = $(script).html();
         if (content) {
-            const bioMatches = content.match(/"biography":\s*"(.*?)(?<!\\)"/g);
-            if (bioMatches) {
-                for (const match of bioMatches) {
-                    const bioTextMatch = match.match(/"biography":\s*"(.*?)(?<!\\)"/);
-                    if (bioTextMatch && bioTextMatch[1]) {
-                        let bioText = bioTextMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"');
-                        if (bioText && bioText.length > 3) {
-                            log.info(`📝 Found bio in script (fallback): ${bioText}`);
+            // Try multiple biography patterns
+            const bioPatterns = [
+                /"biography":\s*"((?:[^"\\]|\\.)*)"/g,  // Standard biography field
+                /"bio":\s*"((?:[^"\\]|\\.)*)"/g,        // Sometimes shortened to 'bio'
+                /"description":\s*"((?:[^"\\]|\\.)*)"/g, // Alternative field name
+                /"about":\s*"((?:[^"\\]|\\.)*)"/g       // Another alternative
+            ];
+            
+            for (const pattern of bioPatterns) {
+                const matches = [...content.matchAll(pattern)];
+                for (const match of matches) {
+                    if (match[1]) {
+                        let bioText = match[1]
+                            .replace(/\\n/g, '\n')
+                            .replace(/\\"/g, '"')
+                            .replace(/\\r/g, '\r')
+                            .replace(/\\t/g, '\t')
+                            .replace(/\\\\/g, '\\');
+                        
+                        if (bioText && bioText.length > 3 && bioText.length < 1000) {
+                            log.info(`📝 Found bio in script (pattern ${pattern.source}): ${bioText}`);
                             foundBio = bioText;
                             return false;
                         }
@@ -517,24 +531,99 @@ function extractBioFromAnywhere($, bodyHtml) {
     
     if (foundBio) return foundBio;
     
-    const bioKeywords = ['Digital creator', 'Creator', 'Entrepreneur', 'Founder', 'CEO', 'Coach', 'Artist', 'Automation', 'Expert'];
+    // Method 2: Look for meta description patterns that might contain bio
+    const metaDescription = $('meta[property="og:description"]').attr('content') || 
+                           $('meta[name="description"]').attr('content');
+    
+    if (metaDescription) {
+        // Remove follower/following stats and extract potential bio
+        let cleanMeta = metaDescription;
+        cleanMeta = cleanMeta.replace(/^\d+[KMB]?\s*Followers?,\s*\d+[KMB]?\s*Following,\s*\d+[KMB]?\s*Posts?\s*-\s*/, '');
+        cleanMeta = cleanMeta.replace(/See Instagram photos and videos from.*$/, '');
+        cleanMeta = cleanMeta.trim();
+        
+        if (cleanMeta && cleanMeta.length > 10 && cleanMeta.length < 500) {
+            log.info(`📝 Extracted bio from meta description: ${cleanMeta}`);
+            return cleanMeta;
+        }
+    }
+    
+    // Method 3: Enhanced keyword search with better patterns
+    const bioKeywords = [
+        'Digital creator', 'Creator', 'Entrepreneur', 'Founder', 'CEO', 'Coach', 
+        'Artist', 'Automation', 'Expert', 'Consultant', 'Specialist', 'Developer',
+        'Designer', 'Photographer', 'Influencer', 'Content creator', 'Business owner',
+        'Marketing', 'Growth', 'Strategy', 'AI', 'Tech', 'Software'
+    ];
+    
     const bodyText = $('body').text();
     
     for (const keyword of bioKeywords) {
-        if (bodyText.includes(keyword)) {
+        if (bodyText.toLowerCase().includes(keyword.toLowerCase())) {
             log.info(`🎯 Found keyword "${keyword}" in body (fallback)`);
-            const regex = new RegExp(`(?<=\\s|^)${keyword}[^.!?]{5,200}[.!?]?`, 'i');
-            const match = bodyText.match(regex);
-            if (match && match[0]) {
-                let bio = match[0].trim();
-                bio = bio.replace(/\s+/g, ' ');
-                if (bio.length > 10 && bio.length < 500) {
-                    log.info(`📝 Extracted bio around keyword (fallback): ${bio}`);
-                    return bio;
+            
+            // Try to extract a sentence or phrase containing the keyword
+            const patterns = [
+                new RegExp(`([^.!?]*${keyword}[^.!?]*[.!?])`, 'i'),  // Full sentence
+                new RegExp(`([^\\n]*${keyword}[^\\n]{10,100})`, 'i'), // Line containing keyword
+                new RegExp(`(${keyword}[^\\n]{5,150})`, 'i')          // Keyword + following text
+            ];
+            
+            for (const pattern of patterns) {
+                const match = bodyText.match(pattern);
+                if (match && match[1]) {
+                    let bio = match[1].trim();
+                    bio = bio.replace(/\s+/g, ' ');
+                    // Filter out common Instagram UI text
+                    if (!bio.includes('photos and videos') && 
+                        !bio.includes('Sign up') && 
+                        !bio.includes('Log in') &&
+                        bio.length > 15 && bio.length < 400) {
+                        log.info(`📝 Extracted bio around keyword (pattern ${pattern.source}): ${bio}`);
+                        return bio;
+                    }
                 }
             }
         }
     }
+    
+    // Method 4: Look for any text that looks like a bio in common Instagram selectors
+    const bioSelectors = [
+        'span[dir="auto"]',  // Common Instagram text container
+        'div[data-testid="bio"]',
+        'article span',
+        'main span',
+        '.xdj266r',  // Instagram class (may change)
+        '.x1lliihq'   // Another common Instagram class
+    ];
+    
+    for (const selector of bioSelectors) {
+        const elements = $(selector);
+        elements.each((i, element) => {
+            if (foundBio) return false;
+            
+            const text = $(element).text().trim();
+            if (text && text.length > 15 && text.length < 400) {
+                // Check if it looks like a bio (contains common bio indicators)
+                const bioIndicators = ['•', '|', '📧', '📩', '🔗', '👆', '👇', '⬇️', '⬆️', 'DM', 'Email', 'Contact'];
+                const hasBioIndicator = bioIndicators.some(indicator => text.includes(indicator));
+                
+                // Or contains descriptive words
+                const descriptiveWords = ['helping', 'passionate', 'love', 'creating', 'building', 'teaching', 'sharing'];
+                const hasDescriptiveWord = descriptiveWords.some(word => text.toLowerCase().includes(word));
+                
+                if (hasBioIndicator || hasDescriptiveWord) {
+                    log.info(`📝 Found potential bio in selector ${selector}: ${text}`);
+                    foundBio = text;
+                    return false;
+                }
+            }
+        });
+        
+        if (foundBio) break;
+    }
+    
+    if (foundBio) return foundBio;
     
     log.info('❌ No bio found with aggressive extraction (fallback)');
     return null;
